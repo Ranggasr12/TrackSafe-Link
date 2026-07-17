@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Environment & secrets
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Firebase service account keys (JANGAN di-commit)
+serviceAccountKey.json
+serviceAccountKey.json.json
+*firebase-adminsdk*.json
+*-firebase-adminsdk-*.json
+*.pem
+*.p12
+
+# Logs / OS
+npm-debug.log*
+*.log
+.DS_Store
+Thumbs.db
+
+# Vercel
+.vercel

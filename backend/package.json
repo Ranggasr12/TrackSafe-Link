@@ -1,0 +1,26 @@
+{
+  "name": "tracksafe-backend",
+  "version": "3.0.1",
+  "description": "TrackSafe Link — Express + Firebase on Vercel Serverless (ESP32 HTTP bridge)",
+  "main": "api/index.js",
+  "engines": {
+    "node": "20.x"
+  },
+  "scripts": {
+    "start": "node local.js",
+    "dev": "node local.js",
+    "simulate:vercel": "node scripts/simulate-vercel.js",
+    "simulate:gps": "node scripts/simulate-gps.js",
+    "vercel-dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "firebase-admin": "^12.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
