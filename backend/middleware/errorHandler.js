@@ -1,10 +1,12 @@
 /**
  * Global error handler untuk Express + Vercel.
  */
+const logger = require('../config/logger');
+
 function errorHandler(err, req, res, next) {
   const statusCode = err.statusCode || err.status || 500;
 
-  console.error('[error]', {
+  logger.error('[error]', {
     message: err.message,
     statusCode,
     path: req.originalUrl,

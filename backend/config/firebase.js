@@ -4,6 +4,7 @@
  */
 
 const admin = require('firebase-admin');
+const logger = require('./logger');
 
 let db = null;
 
@@ -72,14 +73,14 @@ function initFirebase() {
         }),
         databaseURL,
       });
-      console.log('[firebase] initialized for project:', projectId);
+      logger.info('[firebase] initialized for project:', projectId);
     }
 
     db = admin.database();
     return db;
   } catch (error) {
     db = null;
-    console.error('[firebase] init failed:', error.message);
+    logger.error('[firebase] init failed:', error.message);
     throw error;
   }
 }

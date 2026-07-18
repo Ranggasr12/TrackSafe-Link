@@ -1,6 +1,7 @@
 {
   "name": "tracksafe-backend",
   "version": "3.0.1",
+  "private": true,
   "description": "TrackSafe Link — Express + Firebase on Vercel Serverless (ESP32 HTTP bridge)",
   "main": "api/index.js",
   "engines": {

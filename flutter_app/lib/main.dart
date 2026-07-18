@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import 'firebase_options.dart';
 import 'providers/app_state_provider.dart';
+import 'providers/device_pairing_provider.dart';
 import 'providers/monitoring_provider.dart';
 import 'providers/settings_provider.dart';
 import 'repositories/monitoring_repository.dart';
@@ -43,6 +44,9 @@ Future<void> main() async {
   }
 
   final firebaseService = FirebaseService();
+  final pairing = DevicePairingProvider(firebaseService: firebaseService);
+  await pairing.load();
+
   final monitoringRepo = MonitoringRepository(firebaseService: firebaseService);
   final monitoringProvider = MonitoringProvider(repository: monitoringRepo);
 
@@ -50,7 +54,8 @@ Future<void> main() async {
   await appState.initStage1();
 
   debugPrint(
-    'TrackSafe Link started — AppStage=${AppStage.current}',
+    'TrackSafe Link started — AppStage=${AppStage.current} '
+    'paired=${pairing.isPaired}',
   );
 
   runApp(
@@ -58,6 +63,7 @@ Future<void> main() async {
       settingsProvider: settings,
       appStateProvider: appState,
       monitoringProvider: monitoringProvider,
+      devicePairingProvider: pairing,
     ),
   );
 }
@@ -68,11 +74,13 @@ class TrackSafeApp extends StatelessWidget {
     required this.settingsProvider,
     required this.appStateProvider,
     required this.monitoringProvider,
+    required this.devicePairingProvider,
   });
 
   final SettingsProvider settingsProvider;
   final AppStateProvider appStateProvider;
   final MonitoringProvider monitoringProvider;
+  final DevicePairingProvider devicePairingProvider;
 
   @override
   Widget build(BuildContext context) {
@@ -81,6 +89,7 @@ class TrackSafeApp extends StatelessWidget {
         ChangeNotifierProvider.value(value: settingsProvider),
         ChangeNotifierProvider.value(value: appStateProvider),
         ChangeNotifierProvider.value(value: monitoringProvider),
+        ChangeNotifierProvider.value(value: devicePairingProvider),
       ],
       child: NotificationListenerWidget(
         child: Consumer<SettingsProvider>(

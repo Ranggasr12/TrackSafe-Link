@@ -2,12 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-/// Hasil pengecekan GET /api/status.
-///
-/// Response backend yang diharapkan:
-/// ```json
-/// { "success": true, "backend": "online", "firebase": "connected", "timestamp": ... }
-/// ```
 class BackendStatusResult {
   const BackendStatusResult({
     required this.configured,
@@ -31,13 +25,11 @@ class BackendStatusResult {
   );
 }
 
-/// HTTP health check ke backend — tanpa dependency tambahan (dart:io).
 class BackendStatusService {
   BackendStatusService({HttpClient? client}) : _client = client ?? HttpClient();
 
   final HttpClient _client;
 
-  /// Panggil GET `{baseUrl}/api/status` dan parse response.
   Future<BackendStatusResult> check(String baseUrl) async {
     final trimmed = baseUrl.trim();
     if (trimmed.isEmpty) return BackendStatusResult.notConfigured;
@@ -49,13 +41,13 @@ class BackendStatusService {
 
     try {
       final request = await _client.getUrl(uri).timeout(
-        const Duration(seconds: 8),
-      );
+            const Duration(seconds: 8),
+          );
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
 
       final response = await request.close().timeout(
-        const Duration(seconds: 8),
-      );
+            const Duration(seconds: 8),
+          );
       final body = await response.transform(utf8.decoder).join();
 
       if (response.statusCode < 200 || response.statusCode >= 300) {

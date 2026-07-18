@@ -8,10 +8,11 @@ import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../providers/device_pairing_provider.dart';
 import '../providers/monitoring_provider.dart';
 import '../utils/constants.dart';
+import '../utils/device_link_status.dart';
 import '../utils/formatters.dart';
-import '../utils/offline_detector.dart';
 import '../models/monitoring_model.dart';
 
 /// Peta monitoring — Sprint 28: Smart Safety Engine.
@@ -188,16 +189,54 @@ class _MapScreenState extends State<MapScreen>
 
   bool _isSenderOnline(MonitoringModel? monitoring) {
     if (monitoring == null || !monitoring.hasData) return false;
-    if (monitoring.latitude == null || monitoring.longitude == null) {
-      return false;
-    }
-    return !OfflineDetector.isOffline(monitoring);
+    final gps = DeviceLinkStatusResolver.gpsFixFromCoords(
+      monitoring.latitude,
+      monitoring.longitude,
+    );
+    return DeviceLinkStatusResolver.resolve(
+          isLoading: false,
+          seenThisSession: true,
+          telemetry: monitoring,
+          hasGpsFix: gps,
+        ) ==
+        DeviceLinkStatus.online;
   }
 
-  bool _isReceiverOnline(MonitoringModel? monitoring) {
-    if (!_isSenderOnline(monitoring)) return false;
-    return monitoring!.receiverLatitude != null &&
-        monitoring.receiverLongitude != null;
+  bool _isReceiverOnline({
+    required MonitoringModel? nested,
+    required MonitoringModel? receiverNode,
+  }) {
+    final gpsFromNode = DeviceLinkStatusResolver.gpsFixFromCoords(
+      receiverNode?.latitude,
+      receiverNode?.longitude,
+    );
+    final gpsFromNested = nested != null &&
+        nested.receiverLatitude != null &&
+        nested.receiverLongitude != null;
+    final telemetry =
+        (receiverNode != null && receiverNode.hasData) ? receiverNode : null;
+
+    return DeviceLinkStatusResolver.resolve(
+          isLoading: false,
+          seenThisSession: true,
+          telemetry: telemetry,
+          hasGpsFix: gpsFromNode || gpsFromNested,
+        ) ==
+        DeviceLinkStatus.online;
+  }
+
+  LatLng? _receiverLatLng({
+    required MonitoringModel? nested,
+    required MonitoringModel? receiverNode,
+  }) {
+    if (receiverNode?.latitude != null && receiverNode?.longitude != null) {
+      return LatLng(receiverNode!.latitude!, receiverNode.longitude!);
+    }
+    if (nested?.receiverLatitude != null &&
+        nested?.receiverLongitude != null) {
+      return LatLng(nested!.receiverLatitude!, nested.receiverLongitude!);
+    }
+    return null;
   }
 
   void _logCameraReport({
@@ -525,20 +564,26 @@ class _MapScreenState extends State<MapScreen>
       appBar: AppBar(
         title: const Text('Peta Monitoring'),
       ),
-      body: Consumer<MonitoringProvider>(
-        builder: (context, provider, _) {
+      body: Consumer2<MonitoringProvider, DevicePairingProvider>(
+        builder: (context, provider, pairing, _) {
           final monitoring = provider.monitoring;
+          final receiverNode = pairing.receiverTelemetry;
           final senderOnline = _isSenderOnline(monitoring);
-          final receiverOnline = _isReceiverOnline(monitoring);
+          final receiverOnline = _isReceiverOnline(
+            nested: monitoring,
+            receiverNode: receiverNode,
+          );
 
           // Marker hanya jika ONLINE — jangan tampilkan koordinat stale saat OFF.
-          final LatLng? sender = senderOnline
+          final LatLng? sender = senderOnline &&
+                  monitoring?.latitude != null &&
+                  monitoring?.longitude != null
               ? LatLng(monitoring!.latitude!, monitoring.longitude!)
               : null;
           final LatLng? receiver = receiverOnline
-              ? LatLng(
-                  monitoring!.receiverLatitude!,
-                  monitoring.receiverLongitude!,
+              ? _receiverLatLng(
+                  nested: monitoring,
+                  receiverNode: receiverNode,
                 )
               : null;
           final user = _workerPosition;

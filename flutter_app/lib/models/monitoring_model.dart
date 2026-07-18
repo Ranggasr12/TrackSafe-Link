@@ -17,6 +17,10 @@ class MonitoringModel {
   final bool online;
   final bool hasData;
 
+  /// Status koneksi dari Backend Device Status Engine (OFF/WAITING/CONNECTING/ONLINE).
+  /// Null jika perangkat belum menulis field ini (fallback resolver lokal).
+  final String? linkStatus;
+
   const MonitoringModel({
     required this.deviceId,
     required this.status,
@@ -31,6 +35,7 @@ class MonitoringModel {
     this.speed,
     this.online = false,
     this.hasData = false,
+    this.linkStatus,
   });
 
   factory MonitoringModel.noData({String? deviceId}) {
@@ -48,6 +53,7 @@ class MonitoringModel {
       timestamp: 0,
       online: false,
       hasData: false,
+      linkStatus: null,
     );
   }
 
@@ -121,6 +127,7 @@ class MonitoringModel {
       timestamp: parseInt(map['timestamp']) ?? 0,
       online: map['online'] == true,
       hasData: true,
+      linkStatus: map['linkStatus']?.toString(),
     );
   }
 
@@ -138,6 +145,7 @@ class MonitoringModel {
       'speed': speed,
       'timestamp': timestamp,
       'online': online,
+      if (linkStatus != null) 'linkStatus': linkStatus,
     };
   }
 
@@ -155,6 +163,7 @@ class MonitoringModel {
     int? timestamp,
     bool? online,
     bool? hasData,
+    String? linkStatus,
   }) {
     return MonitoringModel(
       deviceId: deviceId ?? this.deviceId,
@@ -170,6 +179,7 @@ class MonitoringModel {
       timestamp: timestamp ?? this.timestamp,
       online: online ?? this.online,
       hasData: hasData ?? this.hasData,
+      linkStatus: linkStatus ?? this.linkStatus,
     );
   }
 

@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/app_state_provider.dart';
+import '../providers/device_pairing_provider.dart';
 import '../providers/settings_provider.dart';
 import '../theme/app_colors.dart';
 import '../utils/app_stage.dart';
 import '../utils/constants.dart';
+import 'manage_devices_screen.dart';
 
 /// Setting TAHAP 1 — preferensi UI lokal saja.
 class SettingScreen extends StatelessWidget {
@@ -77,6 +79,39 @@ class SettingScreen extends StatelessWidget {
                   onChanged: AppStage.alarmEnabled
                       ? settings.setNotificationEnabled
                       : null,
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            Text(
+              'Perangkat',
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
+            const SizedBox(height: 12),
+            _Card(
+              children: [
+                Consumer<DevicePairingProvider>(
+                  builder: (context, pairing, _) {
+                    return ListTile(
+                      leading: const Icon(Icons.devices, color: AppColors.primary),
+                      title: const Text('Manage Devices'),
+                      subtitle: Text(
+                        pairing.isPaired
+                            ? '${pairing.senderId} / ${pairing.receiverId}'
+                            : 'Belum ada perangkat',
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const ManageDevicesScreen(),
+                          ),
+                        );
+                      },
+                    );
+                  },
                 ),
               ],
             ),

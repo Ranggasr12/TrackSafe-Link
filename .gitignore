@@ -2,14 +2,14 @@
 
 # --- Secrets & credentials (NEVER push) ---
 **/.env
-**/.env.local
-**/.env.production
-**/.env.*.local
+**/.env.*
+!**/.env.example
 **/serviceAccountKey.json
-**/serviceAccountKey.json.json
+**/serviceAccountKey*.json
 **/*firebase-adminsdk*.json
 **/*.pem
 **/*.p12
+**/*.key
 **/key.properties
 **/*.keystore
 **/*.jks
@@ -18,7 +18,10 @@
 backend/node_modules/
 backend/.vercel/
 backend/npm-debug.log*
+backend/yarn-debug.log*
+backend/yarn-error.log*
 backend/coverage/
+backend/logs/
 
 # --- Flutter ---
 flutter_app/.dart_tool/

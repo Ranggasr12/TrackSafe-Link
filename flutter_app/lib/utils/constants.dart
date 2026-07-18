@@ -4,6 +4,8 @@ class AppConstants {
 
   static const String appName = 'TrackSafe Link';
   static const String appTagline = 'Early Warning System Kereta Api';
+  /// Placeholder Device ID untuk model kosong / history legacy saja.
+  /// Device ID runtime berasal dari Device Pairing (SharedPreferences).
   static const String defaultDeviceId = 'sender01';
 
   static const String devicesPath = 'devices';
@@ -37,6 +39,11 @@ class AppConstants {
   static const String prefNotification = 'notification_enabled';
   static const String prefDarkMode = 'dark_mode';
   static const String prefDeviceId = 'device_id';
+
+  /// Device Pairing (Sprint 31.3) — menggantikan Device ID hardcoded.
+  static const String prefSenderId = 'paired_sender_id';
+  static const String prefReceiverId = 'paired_receiver_id';
+  static const String prefLastConnectedMs = 'paired_last_connected_ms';
 }
 
 /// Status sensor / overlay tampilan.

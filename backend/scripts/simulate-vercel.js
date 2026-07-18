@@ -1,6 +1,8 @@
 /**
  * Simulasi deployment Vercel (tanpa akun Vercel).
  *
+ * Development Only — script uji lokal sebelum deploy.
+ *
  * Mengecek:
  * - MODULE_NOT_FOUND / require graph
  * - Express export (function)
@@ -47,6 +49,7 @@ function checkFile(rel) {
 async function invoke(app, { method, url, body }) {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, '127.0.0.1', () => {
+      // Development Only — loopback untuk harness uji lokal
       const { port } = server.address();
       const payload = body ? JSON.stringify(body) : null;
       const req = http.request(
@@ -302,6 +305,43 @@ async function main() {
       },
       expect: 400,
     },
+    {
+      name: 'GET /api/device/sender01',
+      method: 'GET',
+      url: '/api/device/sender01',
+      expect: 200,
+    },
+    {
+      name: 'GET /api/devices',
+      method: 'GET',
+      url: '/api/devices',
+      expect: 200,
+    },
+    {
+      name: 'POST /api/device/heartbeat',
+      method: 'POST',
+      url: '/api/device/heartbeat',
+      body: {
+        deviceId: 'sender01',
+        battery: 90,
+        signal: 20,
+        gpsFix: true,
+        latitude: -6.914744,
+        longitude: 107.60981,
+      },
+      expect: 200,
+    },
+    {
+      name: 'POST /api/device/heartbeat unknown device (404)',
+      method: 'POST',
+      url: '/api/device/heartbeat',
+      body: {
+        deviceId: 'device-does-not-exist-xyz',
+        battery: 10,
+        signal: 1,
+      },
+      expect: 404,
+    },
     { name: 'GET unknown (404)', method: 'GET', url: '/api/does-not-exist', expect: 404 },
   ];
 
@@ -318,6 +358,36 @@ async function main() {
           ok(`${c.name} payload`, 'backend online + firebase connected');
         } else {
           fail(`${c.name} payload`, JSON.stringify(res.body));
+        }
+      }
+      if (c.url === '/api/device/sender01' && res.status === 200) {
+        const b = res.body || {};
+        if (
+          typeof b.exists === 'boolean'
+          && typeof b.deviceType === 'string'
+          && typeof b.status === 'string'
+          && b.success === true
+          && b.data != null
+        ) {
+          ok(`${c.name} payload`, `exists=${b.exists} type=${b.deviceType} status=${b.status}`);
+        } else {
+          fail(`${c.name} payload`, JSON.stringify(b));
+        }
+      }
+      if (c.url === '/api/devices' && res.status === 200) {
+        const b = res.body || {};
+        if (b.success === true && Array.isArray(b.devices)) {
+          ok(`${c.name} payload`, `count=${b.count}`);
+        } else {
+          fail(`${c.name} payload`, JSON.stringify(b));
+        }
+      }
+      if (c.url === '/api/device/heartbeat' && res.status === 200) {
+        const b = res.body || {};
+        if (b.success === true && b.updated === true && typeof b.status === 'string') {
+          ok(`${c.name} payload`, `status=${b.status}`);
+        } else {
+          fail(`${c.name} payload`, JSON.stringify(b));
         }
       }
     } catch (e) {

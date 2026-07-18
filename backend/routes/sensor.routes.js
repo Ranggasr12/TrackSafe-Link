@@ -10,7 +10,7 @@ router.post('/sensor', sensorController.postSensor);
 router.post('/telemetry', sensorController.postSensor);
 router.post('/data', sensorController.postSensor);
 
-router.get('/device/:deviceId', sensorController.getDevice);
+// GET /device/:deviceId dipindah ke device.routes (respons diperkaya, backward compatible).
 router.get('/history', sensorController.getHistory);
 
 module.exports = router;

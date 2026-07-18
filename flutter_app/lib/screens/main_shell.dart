@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../providers/device_pairing_provider.dart';
 import 'dashboard_screen.dart';
+import 'device_pairing_screen.dart';
 import 'history_screen.dart';
 import 'setting_screen.dart';
 import 'splash_screen.dart';
 import 'statistics_screen.dart';
 
-/// Splash → shell navigasi (TAHAP 1: tanpa alarm overlay).
+/// Splash → cek Device Pairing → Dashboard / Pairing Screen.
 class AppBootstrap extends StatefulWidget {
   const AppBootstrap({super.key});
 
@@ -15,18 +18,37 @@ class AppBootstrap extends StatefulWidget {
 }
 
 class _AppBootstrapState extends State<AppBootstrap> {
-  bool _ready = false;
+  bool _splashDone = false;
 
   @override
   Widget build(BuildContext context) {
-    if (!_ready) {
+    if (!_splashDone) {
       return SplashScreen(
         onFinished: () {
-          if (mounted) setState(() => _ready = true);
+          if (mounted) setState(() => _splashDone = true);
         },
       );
     }
-    return const MainShell();
+
+    return Consumer<DevicePairingProvider>(
+      builder: (context, pairing, _) {
+        if (!pairing.isLoaded) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+
+        if (!pairing.isPaired) {
+          return DevicePairingScreen(
+            onPaired: () {
+              pairing.touchLastConnected();
+            },
+          );
+        }
+
+        return const MainShell();
+      },
+    );
   }
 }
 
@@ -48,6 +70,15 @@ class _MainShellState extends State<MainShell> {
     StatisticsScreen(),
     SettingScreen(),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<DevicePairingProvider>().touchLastConnected();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {

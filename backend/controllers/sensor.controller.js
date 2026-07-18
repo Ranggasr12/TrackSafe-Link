@@ -1,4 +1,5 @@
 const telemetryService = require('../services/telemetry.service');
+const logger = require('../config/logger');
 
 /**
  * POST /api/sensor
@@ -60,7 +61,8 @@ async function postSensor(req, res, next) {
 
     const saved = await telemetryService.saveSensorData(payload);
 
-    console.log(
+    // Debug log — Development Only (hindari spam di production / ESP32 poll).
+    logger.debug(
       `[sensor] saved ${saved.deviceId} | ${saved.status} | ` +
         `${saved.distance}cm | GPS ${saved.latitude},${saved.longitude} | ` +
         `speed ${saved.speed}`,
@@ -73,7 +75,7 @@ async function postSensor(req, res, next) {
       serverTime: Date.now(),
     });
   } catch (error) {
-    console.error('[sensor] error:', error.message);
+    logger.error('[sensor] error:', error.message);
     const statusCode = error.statusCode || 500;
     return res.status(statusCode).json({
       success: false,
@@ -102,7 +104,7 @@ async function getDevice(req, res, next) {
       data: data || {},
     });
   } catch (error) {
-    console.error('[device] error:', error.message);
+    logger.error('[device] error:', error.message);
     error.statusCode = 500;
     return next(error);
   }
@@ -127,7 +129,7 @@ async function getHistory(req, res, next) {
       data,
     });
   } catch (error) {
-    console.error('[history] error:', error.message);
+    logger.error('[history] error:', error.message);
     error.statusCode = 500;
     return next(error);
   }

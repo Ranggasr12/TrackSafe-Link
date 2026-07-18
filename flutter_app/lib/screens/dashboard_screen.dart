@@ -9,17 +9,18 @@ import 'package:provider/provider.dart';
 
 import '../models/monitoring_model.dart';
 import '../providers/app_state_provider.dart';
+import '../providers/device_pairing_provider.dart';
 import '../providers/monitoring_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/local_notification_service.dart';
 import '../theme/app_colors.dart';
 import '../utils/app_stage.dart';
 import '../utils/constants.dart';
+import '../utils/device_link_status.dart';
 import '../utils/formatters.dart';
 import '../utils/offline_detector.dart';
 import '../utils/system_labels.dart';
-import '../widgets/battery_card.dart';
-import '../widgets/signal_card.dart';
+import '../widgets/device_monitor_card.dart';
 import '../widgets/status_card.dart';
 
 /// Dashboard — membaca data dari MonitoringProvider.
@@ -40,13 +41,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _initialized = false;
   LatLng? _workerPosition;
   StreamSubscription<Position>? _workerSubscription;
-  _ConnectionDisplayState? _lastSenderConnection;
-  _ConnectionDisplayState? _lastReceiverConnection;
+  DeviceLinkStatus? _lastSenderConnection;
+  DeviceLinkStatus? _lastReceiverConnection;
   String? _lastReceiverDebugKey;
 
   /// True jika perangkat pernah ONLINE sejak aplikasi dibuka (sesi ini).
   bool _senderSeenThisSession = false;
   bool _receiverSeenThisSession = false;
+  String? _pairedSessionKey;
 
   @override
   void initState() {
@@ -120,26 +122,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
     MonitoringProvider monProv,
     AppStateProvider appState,
     SettingsProvider settings,
+    DevicePairingProvider pairing,
   ) {
-    _updateSessionPresence(monProv);
+    _updateSessionPresence(monProv, pairing);
 
-    final sender = _resolveDeviceConnection(
+    final sender = _resolveSenderConnection(
       monProv,
       seenThisSession: _senderSeenThisSession,
-      hasDeviceData: _hasSenderData(monProv.monitoring),
     );
-    final receiver = _resolveDeviceConnection(
+    final receiver = _resolveReceiverConnection(
       monProv,
+      pairing,
       seenThisSession: _receiverSeenThisSession,
-      hasDeviceData: _hasReceiverData(monProv.monitoring),
     );
-    final receiverLastUpdate =
-        _formatConnectionLastUpdate(monProv.monitoring, receiver);
+    final receiverLastUpdate = _formatLinkLastUpdate(
+      _receiverTelemetry(monProv, pairing),
+      receiver,
+    );
 
     final receiverDebugKey = '$receiver|$receiverLastUpdate';
     if (receiverDebugKey != _lastReceiverDebugKey) {
       _lastReceiverDebugKey = receiverDebugKey;
-      debugPrint('Receiver Status: ${_connectionStateLabel(receiver)}');
+      debugPrint('Receiver Status: ${receiver.label}');
       debugPrint('Receiver Last Update: $receiverLastUpdate');
     }
 
@@ -148,8 +152,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (!mounted) return;
       appState.syncMonitoring(
         monitoring: monProv.monitoring,
-        senderState: _connectionStateLabel(sender),
-        receiverState: _connectionStateLabel(receiver),
+        senderState: sender.label,
+        receiverState: receiver.label,
       );
     });
 
@@ -170,25 +174,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _lastReceiverConnection = receiver;
   }
 
-  void _updateSessionPresence(MonitoringProvider mon) {
-    if (!mon.isInitialized || mon.isLoading) return;
-    final monitoring = mon.monitoring;
-    if (monitoring == null || !monitoring.hasData) return;
-    if (OfflineDetector.isOffline(monitoring)) return;
+  void _updateSessionPresence(
+    MonitoringProvider mon,
+    DevicePairingProvider pairing,
+  ) {
+    final sessionKey = '${pairing.senderId}|${pairing.receiverId}';
+    if (_pairedSessionKey != sessionKey) {
+      _pairedSessionKey = sessionKey;
+      _senderSeenThisSession = false;
+      _receiverSeenThisSession = false;
+    }
 
-    if (_hasSenderData(monitoring)) {
+    if (!mon.isInitialized || mon.isLoading) return;
+
+    final sender = mon.monitoring;
+    if (sender != null &&
+        sender.hasData &&
+        !OfflineDetector.isOffline(sender) &&
+        _hasSenderData(sender)) {
       _senderSeenThisSession = true;
     }
-    if (_hasReceiverData(monitoring)) {
+
+    final receiver = _receiverTelemetry(mon, pairing);
+    if (receiver != null &&
+        receiver.hasData &&
+        !OfflineDetector.isOffline(receiver) &&
+        DeviceLinkStatusResolver.hasCoreTelemetry(receiver)) {
       _receiverSeenThisSession = true;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Consumer3<MonitoringProvider, AppStateProvider, SettingsProvider>(
-      builder: (context, monProv, appState, settings, _) {
-        _syncConnectionState(monProv, appState, settings);
+    return Consumer4<MonitoringProvider, AppStateProvider, SettingsProvider,
+        DevicePairingProvider>(
+      builder: (context, monProv, appState, settings, pairing, _) {
+        _syncConnectionState(monProv, appState, settings, pairing);
 
         // State: Loading (saat pertama kali, belum ada data)
         if (monProv.isLoading && monProv.monitoring == null) {
@@ -209,7 +230,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _StageBanner(stage: appState.stage),
             const SizedBox(height: 16),
             Text(
-              'Monitoring',
+              'Device Monitoring',
               style: theme.textTheme.headlineSmall?.copyWith(
                 fontWeight: FontWeight.w800,
                 letterSpacing: 0.2,
@@ -227,8 +248,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const SizedBox(height: 16),
             StatusCard(status: monProv.currentStatus),
             const SizedBox(height: 16),
-            _DeviceConnectionSection(
+            _DeviceMonitoringSection(
               monitoringProvider: monProv,
+              pairing: pairing,
               senderSeenThisSession: _senderSeenThisSession,
               receiverSeenThisSession: _receiverSeenThisSession,
             ),
@@ -236,6 +258,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _DashboardMapCard(
               monitoring: monProv.monitoring,
               workerPosition: _workerPosition,
+              senderOnline: _resolveSenderConnection(
+                    monProv,
+                    seenThisSession: _senderSeenThisSession,
+                  ) ==
+                  DeviceLinkStatus.online,
+              receiverOnline: _resolveReceiverConnection(
+                    monProv,
+                    pairing,
+                    seenThisSession: _receiverSeenThisSession,
+                  ) ==
+                  DeviceLinkStatus.online,
+              receiverPosition: () {
+                final coords = _receiverCoordinates(
+                  monProv.monitoring,
+                  pairing.receiverTelemetry,
+                );
+                if (coords.lat == null || coords.lng == null) return null;
+                return LatLng(coords.lat!, coords.lng!);
+              }(),
             ),
             const SizedBox(height: 16),
             _GpsDistanceCard(
@@ -244,18 +285,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             const SizedBox(height: 16),
             _SystemStatusCard(state: appState),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: BatteryCard(percent: monProv.displayBattery),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: SignalCard(signal: monProv.displaySignal),
-                ),
-              ],
-            ),
             const SizedBox(height: 16),
             _DistancePlaceholder(distance: monProv.displayDistance),
           ],
@@ -339,14 +368,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
 }
 
 /// Peta ringkas Dashboard — Sender, Receiver, Worker.
+/// Marker Sender/Receiver hanya tampil jika status ONLINE (Device Pairing).
 class _DashboardMapCard extends StatefulWidget {
   const _DashboardMapCard({
     this.monitoring,
     this.workerPosition,
+    this.senderOnline,
+    this.receiverOnline,
+    this.receiverPosition,
   });
 
   final MonitoringModel? monitoring;
   final LatLng? workerPosition;
+
+  /// Jika null, fallback ke deteksi telemetry existing.
+  final bool? senderOnline;
+  final bool? receiverOnline;
+
+  /// Koordinat Receiver dari Device Pairing (atau nested Sender).
+  final LatLng? receiverPosition;
 
   @override
   State<_DashboardMapCard> createState() => _DashboardMapCardState();
@@ -387,8 +427,10 @@ class _DashboardMapCardState extends State<_DashboardMapCard> {
   }) {
     final senderLat = monitoring?.latitude;
     final senderLng = monitoring?.longitude;
-    final receiverLat = monitoring?.receiverLatitude;
-    final receiverLng = monitoring?.receiverLongitude;
+    final receiverLat =
+        widget.receiverPosition?.latitude ?? monitoring?.receiverLatitude;
+    final receiverLng =
+        widget.receiverPosition?.longitude ?? monitoring?.receiverLongitude;
     final senderStatus = monitoring?.status ?? SensorStatus.unknown;
     final isStale = monitoring != null &&
         monitoring.hasData &&
@@ -426,7 +468,7 @@ class _DashboardMapCardState extends State<_DashboardMapCard> {
     debugPrint('Receiver');
     debugPrint('Online: ${receiverOnline ? 'YES' : 'NO'}');
     if (receiverOnline) {
-      debugPrint('Reason: sender online + receiver coordinates available');
+      debugPrint('Reason: receiver ONLINE (Device Link status)');
     } else if (receiverLat == null || receiverLng == null) {
       debugPrint('Reason: receiver coordinates not available');
     } else if (!_isSenderOnline(monitoring)) {
@@ -441,8 +483,10 @@ class _DashboardMapCardState extends State<_DashboardMapCard> {
   ({LatLng? sender, LatLng? receiver}) _resolveActiveMarkers(
     MonitoringModel? monitoring,
   ) {
-    final senderOnline = _isSenderOnline(monitoring);
-    final receiverOnline = _isReceiverOnline(monitoring);
+    final senderOnline =
+        widget.senderOnline ?? _isSenderOnline(monitoring);
+    final receiverOnline =
+        widget.receiverOnline ?? _isReceiverOnline(monitoring);
 
     final onlineReportKey = '$senderOnline|$receiverOnline';
     if (onlineReportKey != _lastOnlineReportKey) {
@@ -454,15 +498,25 @@ class _DashboardMapCardState extends State<_DashboardMapCard> {
       );
     }
 
-    final LatLng? sender = senderOnline
+    // Marker Sender / Receiver hanya jika status ONLINE.
+    final LatLng? sender = senderOnline &&
+            monitoring?.latitude != null &&
+            monitoring?.longitude != null
         ? LatLng(monitoring!.latitude!, monitoring.longitude!)
         : null;
-    final LatLng? receiver = receiverOnline
-        ? LatLng(
-            monitoring!.receiverLatitude!,
-            monitoring.receiverLongitude!,
-          )
-        : null;
+
+    LatLng? receiver;
+    if (receiverOnline) {
+      receiver = widget.receiverPosition;
+      if (receiver == null &&
+          monitoring?.receiverLatitude != null &&
+          monitoring?.receiverLongitude != null) {
+        receiver = LatLng(
+          monitoring!.receiverLatitude!,
+          monitoring.receiverLongitude!,
+        );
+      }
+    }
 
     return (sender: sender, receiver: receiver);
   }
@@ -1125,14 +1179,34 @@ class _DistancePlaceholder extends StatelessWidget {
   }
 }
 
-enum _ConnectionDisplayState {
-  online,
-  offline,
-  connecting,
-  waiting,
+String? _lastDistanceValidationKey;
+
+MonitoringModel? _receiverTelemetry(
+  MonitoringProvider mon,
+  DevicePairingProvider pairing,
+) {
+  final fromPair = pairing.receiverTelemetry;
+  if (fromPair != null && fromPair.hasData) return fromPair;
+  return null;
 }
 
-String? _lastDistanceValidationKey;
+/// Koordinat Receiver: node pairing, fallback nested di Sender (sprint lama).
+({double? lat, double? lng}) _receiverCoordinates(
+  MonitoringModel? nested,
+  MonitoringModel? receiverNode,
+) {
+  if (receiverNode != null &&
+      receiverNode.latitude != null &&
+      receiverNode.longitude != null) {
+    return (lat: receiverNode.latitude, lng: receiverNode.longitude);
+  }
+  if (nested != null &&
+      nested.receiverLatitude != null &&
+      nested.receiverLongitude != null) {
+    return (lat: nested.receiverLatitude, lng: nested.receiverLongitude);
+  }
+  return (lat: null, lng: null);
+}
 
 bool _hasSenderData(MonitoringModel? monitoring) {
   return monitoring != null &&
@@ -1158,6 +1232,81 @@ bool _isSenderTelemetryOnline(MonitoringModel? monitoring) {
 bool _isReceiverTelemetryOnline(MonitoringModel? monitoring) {
   if (!_isSenderTelemetryOnline(monitoring)) return false;
   return _hasReceiverData(monitoring);
+}
+
+DeviceLinkStatus _resolveSenderConnection(
+  MonitoringProvider mon, {
+  required bool seenThisSession,
+}) {
+  final m = mon.monitoring;
+  final gps = DeviceLinkStatusResolver.gpsFixFromCoords(
+    m?.latitude,
+    m?.longitude,
+  );
+  return DeviceLinkStatusResolver.resolve(
+    isLoading: !mon.isInitialized || mon.isLoading,
+    seenThisSession: seenThisSession,
+    telemetry: m,
+    hasGpsFix: gps,
+  );
+}
+
+DeviceLinkStatus _resolveReceiverConnection(
+  MonitoringProvider mon,
+  DevicePairingProvider pairing, {
+  required bool seenThisSession,
+}) {
+  final nested = mon.monitoring;
+  final receiverNode = pairing.receiverTelemetry;
+
+  // GPS Fix: dari node Receiver atau nested receiver coords di Sender.
+  final gpsFromNode = DeviceLinkStatusResolver.gpsFixFromCoords(
+    receiverNode?.latitude,
+    receiverNode?.longitude,
+  );
+  final gpsFromNested = _hasReceiverData(nested);
+  final hasGps = gpsFromNode || gpsFromNested;
+
+  // Battery / Signal / Status HARUS dari node Receiver IoT — bukan Sender.
+  MonitoringModel? telemetry;
+  if (receiverNode != null && receiverNode.hasData) {
+    telemetry = receiverNode;
+  }
+
+  return DeviceLinkStatusResolver.resolve(
+    isLoading: !mon.isInitialized || mon.isLoading,
+    seenThisSession: seenThisSession,
+    telemetry: telemetry,
+    hasGpsFix: hasGps,
+  );
+}
+
+String _formatLinkLastUpdate(
+  MonitoringModel? monitoring,
+  DeviceLinkStatus state,
+) {
+  if (state == DeviceLinkStatus.waiting ||
+      state == DeviceLinkStatus.connecting) {
+    return DeviceLinkStatusResolver.noDataLabel;
+  }
+  if (monitoring == null || monitoring.timestamp <= 0) {
+    return DeviceLinkStatusResolver.noDataLabel;
+  }
+  return Formatters.time(monitoring.timestamp);
+}
+
+String _iotMetricLabel(int? value, {required bool asBattery}) {
+  if (value == null) return DeviceLinkStatusResolver.noDataLabel;
+  return asBattery ? Formatters.battery(value) : Formatters.signal(value);
+}
+
+String _gpsFixLabel(bool hasFix, DeviceLinkStatus status) {
+  if (status == DeviceLinkStatus.waiting ||
+      status == DeviceLinkStatus.connecting) {
+    return DeviceLinkStatusResolver.noDataLabel;
+  }
+  if (!hasFix) return 'No Data';
+  return 'Fixed';
 }
 
 void _logDistanceValidationReport({
@@ -1207,208 +1356,84 @@ void _logDistanceValidationReport({
   }
 }
 
-/// Logika status seragam untuk Sender dan Receiver.
-///
-/// CONNECTING — sedang mencoba koneksi
-/// WAITING    — belum pernah online sejak aplikasi dibuka
-/// ONLINE     — sedang mengirim data (telemetry segar)
-/// OFF        — pernah online di sesi ini, lalu berhenti update
-_ConnectionDisplayState _resolveDeviceConnection(
-  MonitoringProvider mon, {
-  required bool seenThisSession,
-  required bool hasDeviceData,
-}) {
-  if (!mon.isInitialized || mon.isLoading) {
-    return _ConnectionDisplayState.connecting;
-  }
-
-  final monitoring = mon.monitoring;
-  final telemetryFresh = monitoring != null &&
-      monitoring.hasData &&
-      !OfflineDetector.isOffline(monitoring);
-
-  if (telemetryFresh && hasDeviceData) {
-    return _ConnectionDisplayState.online;
-  }
-
-  if (seenThisSession) {
-    return _ConnectionDisplayState.offline;
-  }
-
-  return _ConnectionDisplayState.waiting;
-}
-
-String _connectionStateLabel(_ConnectionDisplayState state) {
-  switch (state) {
-    case _ConnectionDisplayState.online:
-      return 'ONLINE';
-    case _ConnectionDisplayState.offline:
-      return 'OFF';
-    case _ConnectionDisplayState.connecting:
-      return 'CONNECTING';
-    case _ConnectionDisplayState.waiting:
-      return 'WAITING';
-  }
-}
-
-String _formatConnectionLastUpdate(
-  MonitoringModel? monitoring,
-  _ConnectionDisplayState state,
-) {
-  if (state == _ConnectionDisplayState.waiting ||
-      state == _ConnectionDisplayState.connecting) {
-    return '--';
-  }
-  if (monitoring == null || monitoring.timestamp <= 0) return '--';
-  return Formatters.time(monitoring.timestamp);
-}
-
-class _DeviceConnectionSection extends StatelessWidget {
-  const _DeviceConnectionSection({
+class _DeviceMonitoringSection extends StatelessWidget {
+  const _DeviceMonitoringSection({
     required this.monitoringProvider,
+    required this.pairing,
     required this.senderSeenThisSession,
     required this.receiverSeenThisSession,
   });
 
   final MonitoringProvider monitoringProvider;
+  final DevicePairingProvider pairing;
   final bool senderSeenThisSession;
   final bool receiverSeenThisSession;
 
   @override
   Widget build(BuildContext context) {
     final monitoring = monitoringProvider.monitoring;
-    final senderState = _resolveDeviceConnection(
+    final senderState = _resolveSenderConnection(
       monitoringProvider,
       seenThisSession: senderSeenThisSession,
-      hasDeviceData: _hasSenderData(monitoring),
     );
-    final receiverState = _resolveDeviceConnection(
+    final receiverState = _resolveReceiverConnection(
       monitoringProvider,
+      pairing,
       seenThisSession: receiverSeenThisSession,
-      hasDeviceData: _hasReceiverData(monitoring),
+    );
+
+    final senderOnline = senderState == DeviceLinkStatus.online;
+    final receiverOnline = receiverState == DeviceLinkStatus.online;
+
+    final senderGps = DeviceLinkStatusResolver.gpsFixFromCoords(
+      monitoring?.latitude,
+      monitoring?.longitude,
+    );
+
+    final receiverNode = pairing.receiverTelemetry;
+    final receiverCoords = _receiverCoordinates(monitoring, receiverNode);
+    final receiverGps = DeviceLinkStatusResolver.gpsFixFromCoords(
+      receiverCoords.lat,
+      receiverCoords.lng,
     );
 
     return Column(
       children: [
-        _DeviceConnectionPanel(
-          deviceIcon: Icons.train,
-          deviceName: 'Sender',
-          state: senderState,
-          lastUpdate: _formatConnectionLastUpdate(monitoring, senderState),
+        DeviceMonitorCard(
+          title: pairing.senderId != null
+              ? 'Sender (${pairing.senderId})'
+              : 'Sender',
+          leadingIcon: Icons.sensors,
+          status: senderState,
+          batteryLabel: senderOnline
+              ? _iotMetricLabel(monitoring?.battery, asBattery: true)
+              : DeviceLinkStatusResolver.noDataLabel,
+          signalLabel: senderOnline
+              ? _iotMetricLabel(monitoring?.signal, asBattery: false)
+              : DeviceLinkStatusResolver.noDataLabel,
+          gpsFixLabel: _gpsFixLabel(senderGps, senderState),
+          lastUpdateLabel: _formatLinkLastUpdate(monitoring, senderState),
         ),
         const SizedBox(height: 12),
-        _DeviceConnectionPanel(
-          deviceIcon: Icons.sensors,
-          deviceName: 'Receiver',
-          state: receiverState,
-          lastUpdate: _formatConnectionLastUpdate(monitoring, receiverState),
+        DeviceMonitorCard(
+          title: pairing.receiverId != null
+              ? 'Receiver (${pairing.receiverId})'
+              : 'Receiver',
+          leadingIcon: Icons.router,
+          status: receiverState,
+          batteryLabel: receiverOnline
+              ? _iotMetricLabel(receiverNode?.battery, asBattery: true)
+              : DeviceLinkStatusResolver.noDataLabel,
+          signalLabel: receiverOnline
+              ? _iotMetricLabel(receiverNode?.signal, asBattery: false)
+              : DeviceLinkStatusResolver.noDataLabel,
+          gpsFixLabel: _gpsFixLabel(receiverGps, receiverState),
+          lastUpdateLabel: _formatLinkLastUpdate(
+            receiverNode,
+            receiverState,
+          ),
         ),
       ],
-    );
-  }
-}
-
-class _DeviceConnectionPanel extends StatelessWidget {
-  const _DeviceConnectionPanel({
-    required this.deviceIcon,
-    required this.deviceName,
-    required this.state,
-    required this.lastUpdate,
-  });
-
-  final IconData deviceIcon;
-  final String deviceName;
-  final _ConnectionDisplayState state;
-  final String lastUpdate;
-
-  ({IconData statusIcon, Color color, String label}) get _visual {
-    switch (state) {
-      case _ConnectionDisplayState.online:
-        return (
-          statusIcon: Icons.check_circle,
-          color: AppColors.online,
-          label: 'ONLINE',
-        );
-      case _ConnectionDisplayState.offline:
-        return (
-          statusIcon: Icons.cancel,
-          color: AppColors.offline,
-          label: 'OFF',
-        );
-      case _ConnectionDisplayState.connecting:
-        return (
-          statusIcon: Icons.sync,
-          color: AppColors.warning,
-          label: 'CONNECTING',
-        );
-      case _ConnectionDisplayState.waiting:
-        return (
-          statusIcon: Icons.schedule,
-          color: AppColors.neutral,
-          label: 'WAITING',
-        );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final visual = _visual;
-
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: visual.color.withValues(alpha: 0.35)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(deviceIcon, size: 28, color: visual.color),
-                const SizedBox(width: 10),
-                Text(
-                  deviceName,
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Icon(visual.statusIcon, size: 18, color: visual.color),
-                const SizedBox(width: 8),
-                Text(
-                  visual.label,
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                    color: visual.color,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'Last Update',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: AppColors.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              lastUpdate,
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -1420,8 +1445,8 @@ class _DashboardConnectionNotifier {
 
   static Future<void> notify({
     required String deviceName,
-    required _ConnectionDisplayState? previous,
-    required _ConnectionDisplayState current,
+    required DeviceLinkStatus? previous,
+    required DeviceLinkStatus current,
   }) async {
     if (!AppStage.localNotificationEnabled) return;
     if (!LocalNotificationService.instance.isInitialized) return;
@@ -1430,16 +1455,16 @@ class _DashboardConnectionNotifier {
     String? title;
     String? body;
 
-    if (current == _ConnectionDisplayState.online) {
-      if (previous == _ConnectionDisplayState.offline) {
+    if (current == DeviceLinkStatus.online) {
+      if (previous == DeviceLinkStatus.off) {
         title = '$deviceName Reconnected';
         body = '$deviceName kembali online.';
       } else {
         title = '$deviceName Connected';
         body = '$deviceName berhasil terhubung.';
       }
-    } else if (current == _ConnectionDisplayState.offline &&
-        previous == _ConnectionDisplayState.online) {
+    } else if (current == DeviceLinkStatus.off &&
+        previous == DeviceLinkStatus.online) {
       title = '$deviceName Disconnected';
       body = '$deviceName tidak mengirim data.';
     }
@@ -1466,3 +1491,4 @@ class _DashboardConnectionNotifier {
     debugPrint('Notification Trigger: FOUND — $title');
   }
 }
+

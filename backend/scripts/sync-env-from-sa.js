@@ -1,7 +1,9 @@
 /**
- * One-shot helper: build .env from serviceAccountKey.json.json
+ * One-shot helper: build .env from serviceAccountKey*.json
  * Run: node scripts/sync-env-from-sa.js
- * Then hapus service account dari repo sebelum push/deploy jika perlu.
+ *
+ * Development Only — script lokal untuk generate .env.
+ * JANGAN commit .env atau serviceAccountKey*.json.
  */
 const fs = require('fs');
 const path = require('path');
@@ -20,6 +22,11 @@ if (!saPath) {
 const sa = JSON.parse(fs.readFileSync(saPath, 'utf8'));
 const privateKeyEscaped = String(sa.private_key).replace(/\n/g, '\\n');
 
+// Development Only — URL RTDB dari env jika ada, else dari project_id SA.
+const databaseUrl =
+  process.env.FIREBASE_DATABASE_URL ||
+  `https://${sa.project_id}-default-rtdb.asia-southeast1.firebasedatabase.app`;
+
 const lines = [
   '# TrackSafe Backend — local only (DO NOT COMMIT)',
   'NODE_ENV=development',
@@ -28,11 +35,14 @@ const lines = [
   `FIREBASE_PROJECT_ID=${sa.project_id}`,
   `FIREBASE_CLIENT_EMAIL=${sa.client_email}`,
   `FIREBASE_PRIVATE_KEY="${privateKeyEscaped}"`,
-  'FIREBASE_DATABASE_URL=https://tracksafe-link-default-rtdb.asia-southeast1.firebasedatabase.app',
+  `FIREBASE_DATABASE_URL=${databaseUrl}`,
+  '',
+  'FRONTEND_URL=',
+  'ALLOWED_ORIGIN=',
   '',
 ];
 
 const out = path.join(__dirname, '..', '.env');
 fs.writeFileSync(out, lines.join('\n'), 'utf8');
 console.log('Wrote', out);
-console.log('Also set the same 4 vars in Vercel Dashboard → Environment Variables');
+console.log('Also set the same vars in Vercel Dashboard → Environment Variables');

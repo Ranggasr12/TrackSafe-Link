@@ -156,34 +156,23 @@ class MonitoringProvider extends ChangeNotifier {
 
   /// Sinkronisasi ulang data monitoring.
   ///
-  /// Jika stream masih aktif, method ini hanya memastikan
-  /// state terbaru tersedia tanpa membuat subscription baru.
-  /// Jika stream sudah mati (misal karena error), akan
-  /// melakukan subscribe ulang.
+  /// Selalu membuat subscription baru agar path Firebase mengikuti
+  /// Device ID aktif hasil Device Pairing (Ganti Device), tanpa mengubah
+  /// logika status / display.
   Future<void> refresh() async {
     if (!_isInitialized) {
       await initialize();
       return;
     }
 
-    // Jika stream masih aktif, ambil data dari cache repository
-    if (_streamSubscription != null && !_isStreamDone) {
-      final cached = _repository.cachedMonitoring;
-      if (cached != null) {
-        _monitoring = cached;
-        _errorMessage = null;
-        notifyListeners();
-      }
-      return;
-    }
-
-    // Stream sudah mati — subscribe ulang
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      _streamSubscription?.cancel();
+      await _streamSubscription?.cancel();
+      _streamSubscription = null;
+
       _streamSubscription = _repository.monitoringStream().listen(
             _onMonitoringData,
             onError: _onError,
@@ -221,21 +210,16 @@ class MonitoringProvider extends ChangeNotifier {
   // PRIVATE HELPERS
   // --------------------------------------------------
 
-  /// Flag apakah stream subscription sudah selesai (done).
-  bool _isStreamDone = false;
-
   /// Handler ketika ada data monitoring baru dari stream.
   void _onMonitoringData(MonitoringModel data) {
     _monitoring = data;
     _errorMessage = null;
-    _isStreamDone = false;
     notifyListeners();
   }
 
   /// Handler ketika stream mengalami error.
   void _onError(Object error) {
     _errorMessage = error.toString();
-    _isStreamDone = true;
     notifyListeners();
 
     debugPrint('[MonitoringProvider] Stream error: $error');
@@ -243,7 +227,6 @@ class MonitoringProvider extends ChangeNotifier {
 
   /// Handler ketika stream selesai (done).
   void _onDone() {
-    _isStreamDone = true;
     debugPrint('[MonitoringProvider] Stream done');
   }
 

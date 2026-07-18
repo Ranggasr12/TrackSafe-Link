@@ -2,18 +2,21 @@
  * Simulator GPS E2E — kirim payload ESP32 lengkap ke POST /api/sensor
  * setiap 5 detik dengan koordinat yang bergeser sedikit.
  *
+ * Development Only — jangan dipakai di production Vercel.
+ *
  * Usage:
  *   1. Jalankan backend: npm run dev
  *   2. npm run simulate:gps
  *
  * Env opsional:
- *   BASE_URL   default http://localhost:3000
+ *   BASE_URL   default http://localhost:3000  (Development Only)
  *   DEVICE_ID  default sender01
  *   INTERVAL_MS default 5000
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
+// Development Only — default localhost untuk uji lokal
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
 const DEVICE_ID = process.env.DEVICE_ID || 'sender01';
 const INTERVAL_MS = Number(process.env.INTERVAL_MS) || 5000;

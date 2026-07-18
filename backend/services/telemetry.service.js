@@ -4,6 +4,7 @@
  */
 
 const { getDatabase } = require('../config/firebase');
+const deviceStatusEngine = require('./device-status.engine');
 
 const VALID_STATUS = new Set(['NORMAL', 'NOISE', 'DANGER']);
 
@@ -108,7 +109,12 @@ async function saveSensorData(payload) {
     timestamp: gps.timestamp,
     online: true,
     lastUpdated: Date.now(),
+    lastUpdate: Date.now(),
+    gpsFix: true,
   };
+
+  // Additive: linkStatus dari Device Status Engine (tidak mengubah history / sensor rules).
+  data.linkStatus = deviceStatusEngine.resolveLinkStatus(data, { exists: true });
 
   const deviceRef = db.ref(`devices/${deviceId}`);
   const prevSnap = await deviceRef.once('value');

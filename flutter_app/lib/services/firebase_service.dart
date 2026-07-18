@@ -24,8 +24,25 @@ class FirebaseService {
   bool _initialized = false;
   bool _connecting = false;
 
+  /// Device ID aktif dari Device Pairing (bukan hardcoded).
+  String? _activeDeviceId;
+
   /// Apakah Firebase sudah di-initialize.
   bool get isInitialized => _initialized;
+
+  /// Device ID yang sedang dimonitor (Sender hasil pairing).
+  String? get activeDeviceId => _activeDeviceId;
+
+  /// Set Device ID aktif setelah pairing berhasil.
+  void setActiveDeviceId(String deviceId) {
+    final trimmed = deviceId.trim();
+    _activeDeviceId = trimmed.isEmpty ? null : trimmed;
+  }
+
+  /// Hapus Device ID aktif (setelah unpair).
+  void clearActiveDeviceId() {
+    _activeDeviceId = null;
+  }
 
   /// Inisialisasi koneksi Firebase.
   ///
@@ -65,11 +82,30 @@ class FirebaseService {
     }
   }
 
-  /// Reference ke node device aktif (default: sender01).
+  /// Reference ke node device aktif (Sender dari Device Pairing).
   DatabaseReference _deviceRef() {
     _guardInitialized();
-    final deviceId = AppConstants.defaultDeviceId;
+    final deviceId = _resolveActiveDeviceId();
     return _database!.ref('${AppConstants.devicesPath}/$deviceId');
+  }
+
+  String _resolveActiveDeviceId() {
+    final active = _activeDeviceId?.trim();
+    if (active != null && active.isNotEmpty) return active;
+    // Device ID harus berasal dari Device Pairing — tidak hardcode sender01.
+    throw StateError(
+      '[FirebaseService] Device ID belum di-pair. '
+      'Lakukan Device Pairing terlebih dahulu.',
+    );
+  }
+
+  DatabaseReference _deviceRefFor(String deviceId) {
+    _guardInitialized();
+    final id = deviceId.trim();
+    if (id.isEmpty) {
+      throw ArgumentError('deviceId tidak boleh kosong');
+    }
+    return _database!.ref('${AppConstants.devicesPath}/$id');
   }
 
   /// Reference ke node history.
@@ -120,26 +156,63 @@ class FirebaseService {
   /// Stream data monitoring device secara realtime.
   ///
   /// Yield [MonitoringModel] setiap kali ada perubahan
-  /// di node `devices/{deviceId}`.
+  /// di node `devices/{deviceId}` (Sender hasil pairing).
   Stream<MonitoringModel> monitoringStream() {
     _guardInitialized();
+    final deviceId = _resolveActiveDeviceId();
 
     return _deviceRef().onValue.map((DatabaseEvent event) {
       try {
         final data = _toMap(event.snapshot.value);
 
         if (data == null || data.isEmpty) {
-          return MonitoringModel.noData(
-            deviceId: AppConstants.defaultDeviceId,
-          );
+          return MonitoringModel.noData(deviceId: deviceId);
         }
 
         return MonitoringModel.fromMap(data);
       } catch (error) {
         debugPrint('[FirebaseService] monitoringStream parse error: $error');
-        return MonitoringModel.noData(
-          deviceId: AppConstants.defaultDeviceId,
-        );
+        return MonitoringModel.noData(deviceId: deviceId);
+      }
+    });
+  }
+
+  /// Cek apakah node `devices/{deviceId}` ada di Firebase.
+  Future<bool> deviceExists(String deviceId) async {
+    _guardInitialized();
+    final id = deviceId.trim();
+    if (id.isEmpty) return false;
+
+    try {
+      final snap = await _deviceRefFor(id).get().timeout(
+        const Duration(seconds: 8),
+      );
+      if (!snap.exists) return false;
+      final value = snap.value;
+      if (value == null) return false;
+      if (value is Map && value.isEmpty) return false;
+      return true;
+    } catch (error) {
+      debugPrint('[FirebaseService] deviceExists($id) error: $error');
+      rethrow;
+    }
+  }
+
+  /// Stream telemetry perangkat arbitrary (mis. Receiver hasil pairing).
+  Stream<MonitoringModel> deviceStream(String deviceId) {
+    _guardInitialized();
+    final id = deviceId.trim();
+
+    return _deviceRefFor(id).onValue.map((DatabaseEvent event) {
+      try {
+        final data = _toMap(event.snapshot.value);
+        if (data == null || data.isEmpty) {
+          return MonitoringModel.noData(deviceId: id);
+        }
+        return MonitoringModel.fromMap(data);
+      } catch (error) {
+        debugPrint('[FirebaseService] deviceStream($id) parse error: $error');
+        return MonitoringModel.noData(deviceId: id);
       }
     });
   }
