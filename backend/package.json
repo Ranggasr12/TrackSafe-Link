@@ -5,7 +5,7 @@
   "description": "TrackSafe Link — Express + Firebase on Vercel Serverless (ESP32 HTTP bridge)",
   "main": "api/index.js",
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   },
   "scripts": {
     "start": "node local.js",

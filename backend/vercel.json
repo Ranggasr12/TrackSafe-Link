@@ -4,7 +4,6 @@
   "functions": {
     "api/index.js": {
       "maxDuration": 30,
-      "memory": 1024,
       "includeFiles": "{app.js,config/**,controllers/**,middleware/**,routes/**,services/**}"
     }
   },

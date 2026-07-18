@@ -158,10 +158,10 @@ async function main() {
   } else {
     ok('no mqtt dependency', 'OK');
   }
-  if (pkg.engines && String(pkg.engines.node).includes('20')) {
+  if (pkg.engines && String(pkg.engines.node).includes('24')) {
     ok('engines.node', pkg.engines.node);
   } else {
-    fail('engines.node', 'disarankan node 20.x untuk Vercel');
+    fail('engines.node', 'disarankan node 24.x untuk Vercel');
   }
 
   // 4. Environment variables
