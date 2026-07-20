@@ -7,9 +7,11 @@ class SystemLabels {
 
   static const String backendNotConfigured = 'Not Configured';
   static const String backendNotStarted = 'Not Started';
-  static const String backendChecking = 'Checking';
-  static const String backendOnline = 'Online';
-  static const String backendOffline = 'Offline';
+  static const String backendChecking = 'CHECKING';
+  /// Status dari GET /api/status (Sprint 32).
+  static const String backendOnline = 'ONLINE';
+  static const String backendOffline = 'OFFLINE';
+  static const String backendError = 'ERROR';
 
   static const String firebaseNotConnected = 'Not Connected';
   static const String firebaseChecking = 'Checking';

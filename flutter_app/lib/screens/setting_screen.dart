@@ -135,15 +135,35 @@ class SettingScreen extends StatelessWidget {
                   title: const Text('Aplikasi'),
                   subtitle: Text('${AppConstants.appName} v1.0.0'),
                 ),
-                const ListTile(
-                  leading: Icon(Icons.link_off, color: AppColors.unknown),
-                  title: Text('Backend URL'),
-                  subtitle: Text('Not Configured'),
+                ListTile(
+                  leading: Icon(
+                    Icons.cloud_outlined,
+                    color: appState.backendOnline
+                        ? AppColors.online
+                        : AppColors.unknown,
+                  ),
+                  title: const Text('Backend URL'),
+                  subtitle: Text(AppConstants.backendBaseUrl),
                 ),
-                const ListTile(
-                  leading: Icon(Icons.cloud_off, color: AppColors.unknown),
-                  title: Text('Firebase'),
-                  subtitle: Text('Not Connected'),
+                ListTile(
+                  leading: Icon(
+                    Icons.monitor_heart_outlined,
+                    color: appState.backendOnline
+                        ? AppColors.online
+                        : AppColors.offline,
+                  ),
+                  title: const Text('Backend Status'),
+                  subtitle: Text(appState.backendLabel),
+                ),
+                ListTile(
+                  leading: Icon(
+                    Icons.storage_outlined,
+                    color: appState.firebaseConnected
+                        ? AppColors.online
+                        : AppColors.unknown,
+                  ),
+                  title: const Text('Firebase'),
+                  subtitle: Text(appState.firebaseLabel),
                 ),
               ],
             ),

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/monitoring_model.dart';
+import '../services/backend_api_service.dart';
 import '../services/firebase_service.dart';
 import '../utils/constants.dart';
 
@@ -16,15 +17,19 @@ enum DevicePairResult {
   error,
 }
 
-/// Device Pairing — SharedPreferences + validasi Firebase `devices/{id}`.
+/// Device Pairing — Backend API + SharedPreferences + Firebase monitoring.
 ///
-/// Tidak mengubah MonitoringRepository / MonitoringProvider.
-/// Hanya mengatur Device ID aktif di [FirebaseService] dan menyimpan preferensi.
+/// Pairing dilakukan melalui Backend API (POST /api/device/pair).
+/// Data monitoring dibaca langsung dari Firebase RTDB.
 class DevicePairingProvider extends ChangeNotifier {
-  DevicePairingProvider({required FirebaseService firebaseService})
-      : _firebase = firebaseService;
+  DevicePairingProvider({
+    required FirebaseService firebaseService,
+    BackendApiService? backendApi,
+  })  : _firebase = firebaseService,
+        _backendApi = backendApi ?? BackendApiService();
 
   final FirebaseService _firebase;
+  final BackendApiService _backendApi;
 
   String? _senderId;
   String? _receiverId;
@@ -64,6 +69,7 @@ class DevicePairingProvider extends ChangeNotifier {
       }
 
       if (isPaired) {
+        await _syncPairingFromBackend();
         _firebase.setActiveDeviceId(_senderId!);
         await _ensureFirebase();
         _watchReceiver(_receiverId!);
@@ -78,7 +84,7 @@ class DevicePairingProvider extends ChangeNotifier {
     }
   }
 
-  /// Validasi Firebase lalu simpan pair.
+  /// Validasi melalui Backend API lalu simpan pair.
   Future<DevicePairResult> pair({
     required String senderId,
     required String receiverId,
@@ -99,6 +105,7 @@ class DevicePairingProvider extends ChangeNotifier {
     try {
       await _ensureFirebase();
 
+      // Step 1: Cek apakah device ada di Firebase
       final senderOk = await _firebase.deviceExists(sender);
       if (!senderOk) {
         _busy = false;
@@ -115,6 +122,19 @@ class DevicePairingProvider extends ChangeNotifier {
         return DevicePairResult.receiverNotFound;
       }
 
+      // Step 2: Panggil Backend API untuk pairing (source of truth)
+      final pairResult = await _backendApi.pairDevices(
+        senderId: sender,
+        receiverId: receiver,
+      );
+      if (!pairResult) {
+        _busy = false;
+        _errorMessage = 'Gagal pairing melalui backend';
+        notifyListeners();
+        return DevicePairResult.error;
+      }
+
+      // Step 3: Simpan ke SharedPreferences
       final now = DateTime.now().millisecondsSinceEpoch;
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(AppConstants.prefSenderId, sender);
@@ -141,8 +161,18 @@ class DevicePairingProvider extends ChangeNotifier {
     }
   }
 
-  /// Hapus pair → kembali ke layar pairing.
+  /// Hapus pair → backend unpair + clear local prefs.
   Future<void> clearPairing() async {
+    final sender = _senderId;
+    final receiver = _receiverId;
+
+    if (sender != null || receiver != null) {
+      await _backendApi.unpairDevices(
+        senderId: sender,
+        receiverId: receiver,
+      );
+    }
+
     await _receiverSub?.cancel();
     _receiverSub = null;
     _receiverTelemetry = null;
@@ -167,6 +197,22 @@ class DevicePairingProvider extends ChangeNotifier {
     _lastConnectedMs = now;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(AppConstants.prefLastConnectedMs, now);
+    notifyListeners();
+  }
+
+  Future<void> _syncPairingFromBackend() async {
+    final sender = _senderId?.trim();
+    if (sender == null || sender.isEmpty) return;
+
+    final info = await _backendApi.getPairing(sender);
+    if (info == null || info['paired'] != true) return;
+
+    final pairedId = info['pairedDeviceId']?.toString();
+    if (pairedId == null || pairedId.isEmpty) return;
+
+    _receiverId = pairedId;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(AppConstants.prefReceiverId, pairedId);
     notifyListeners();
   }
 
@@ -200,6 +246,7 @@ class DevicePairingProvider extends ChangeNotifier {
   void dispose() {
     _receiverSub?.cancel();
     _receiverSub = null;
+    _backendApi.dispose();
     super.dispose();
   }
 }

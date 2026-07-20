@@ -62,7 +62,7 @@ class DeviceLinkStatusResolver {
 
   static bool hasHeartbeat(MonitoringModel? m) {
     if (m == null || !m.hasData) return false;
-    return m.timestamp > 0 || m.online;
+    return m.effectiveTimeMs > 0 || m.online;
   }
 
   static bool isFresh(MonitoringModel? m) {

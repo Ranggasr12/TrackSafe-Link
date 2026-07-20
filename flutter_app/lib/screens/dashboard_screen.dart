@@ -1097,6 +1097,10 @@ class _SystemStatusCard extends StatelessWidget {
       return AppColors.offline;
     }
 
+    if (v == 'ERROR' || v == SystemLabels.backendError.toUpperCase()) {
+      return AppColors.danger;
+    }
+
     if (v == 'CONNECTING' ||
         v == 'CHECKING' ||
         v == SystemLabels.backendChecking.toUpperCase()) {

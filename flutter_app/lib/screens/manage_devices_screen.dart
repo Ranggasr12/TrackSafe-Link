@@ -32,7 +32,7 @@ class ManageDevicesScreen extends StatelessWidget {
       builder: (ctx) => AlertDialog(
         title: const Text('Hapus Device'),
         content: const Text(
-          'Pairing akan dihapus dari SharedPreferences. '
+          'Pairing akan dihapus dari backend dan perangkat ini. '
           'Anda harus mendaftarkan perangkat lagi.',
         ),
         actions: [

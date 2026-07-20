@@ -1,6 +1,6 @@
 /**
  * Express application factory (tanpa app.listen).
- * Digunakan oleh Vercel Serverless (api/index.js) dan local.js.
+ * Digunakan oleh Railway (server.js) dan legacy Vercel (api/index.js).
  */
 
 require('dotenv').config();
@@ -78,7 +78,7 @@ app.get('/', (_req, res) => {
   res.status(200).json({
     success: true,
     name: 'TrackSafe Link Backend',
-    mode: 'vercel-serverless',
+    mode: process.env.RAILWAY_ENVIRONMENT ? 'railway-persistent' : 'express',
     endpoints: {
       status: 'GET /api/status',
       sensor: 'POST /api/sensor',
@@ -96,9 +96,12 @@ app.get('/', (_req, res) => {
 app.use('/api', apiRoutes);
 app.use(apiRoutes);
 
-// Alias health check lama
-app.get('/health', statusController.getStatus);
-app.get('/api/health', statusController.getStatus);
+// Health check — Railway + monitoring
+app.get('/health', statusController.getHealth);
+app.get('/api/health', statusController.getHealth);
+
+// Legacy status alias
+app.get('/api/status', statusController.getStatus);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

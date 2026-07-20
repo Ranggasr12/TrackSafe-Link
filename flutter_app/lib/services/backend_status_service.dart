@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 class BackendStatusResult {
   const BackendStatusResult({
     required this.configured,
@@ -89,6 +91,7 @@ class BackendStatusService {
         error: success ? null : map['error']?.toString(),
       );
     } on TimeoutException {
+      debugPrint('[BackendStatus] timeout GET /api/status');
       return const BackendStatusResult(
         configured: true,
         reachable: false,
@@ -97,6 +100,7 @@ class BackendStatusService {
         error: 'Timeout',
       );
     } catch (e) {
+      debugPrint('[BackendStatus] error GET /api/status: $e');
       return BackendStatusResult(
         configured: true,
         reachable: false,

@@ -133,14 +133,6 @@ class FirebaseService {
   // PARSER HELPERS
   // --------------------------------------------------
 
-  /// Parse dynamic value menjadi int (nullable).
-  int? _parseInt(dynamic value) {
-    if (value == null) return null;
-    if (value is int) return value;
-    if (value is double) return value.toInt();
-    return int.tryParse(value.toString());
-  }
-
   /// Parse snapshot value menjadi Map? (null-safe).
   Map<dynamic, dynamic>? _toMap(dynamic value) {
     if (value == null) return null;
@@ -185,8 +177,8 @@ class FirebaseService {
 
     try {
       final snap = await _deviceRefFor(id).get().timeout(
-        const Duration(seconds: 8),
-      );
+            const Duration(seconds: 8),
+          );
       if (!snap.exists) return false;
       final value = snap.value;
       if (value == null) return false;

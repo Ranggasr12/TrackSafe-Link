@@ -4,7 +4,7 @@
   "functions": {
     "api/index.js": {
       "maxDuration": 30,
-      "includeFiles": "{app.js,config/**,controllers/**,middleware/**,routes/**,services/**}"
+      "includeFiles": "{app.js,config/**,controllers/**,middleware/**,routes/**,services/**,mqtt-worker.js}"
     }
   },
   "rewrites": [

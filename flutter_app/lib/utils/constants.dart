@@ -21,11 +21,14 @@ class AppConstants {
   /// Base URL backend production (tanpa trailing slash).
   ///
   /// Override saat build:
-  /// `flutter run --dart-define=BACKEND_BASE_URL=https://your-app.vercel.app`
-  static const String backendHealthUrl = String.fromEnvironment(
+  /// `flutter run --dart-define=BACKEND_BASE_URL=https://other.vercel.app`
+  static const String backendBaseUrl = String.fromEnvironment(
     'BACKEND_BASE_URL',
-    defaultValue: '',
+    defaultValue: 'https://track-safe-link.vercel.app',
   );
+
+  /// Alias untuk health check Application Status (GET /api/status).
+  static const String backendHealthUrl = backendBaseUrl;
 
   /// Interval poll Application Status (detik).
   static const int statusPollIntervalSec = 15;
@@ -62,6 +65,9 @@ class SensorStatus {
     if (raw == null || raw.trim().isEmpty) return unknown;
     final upper = raw.toUpperCase().trim();
     if (esp32Statuses.contains(upper)) return upper;
+    // MQTT V2 aliases (backend maps to NORMAL/DANGER; fallback for direct reads)
+    if (upper == 'SAFE') return normal;
+    if (upper == 'TRAIN') return danger;
     if (upper == unknown || upper == offline) return upper;
     return unknown;
   }

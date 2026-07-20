@@ -10,26 +10,38 @@ TrackSafe-Link/
 └── .gitignore
 ```
 
-## Architecture
+## Architecture (V2 — MQTT HiveMQ)
 
 ```
-ESP32  →  POST /api/sensor  →  Backend (Vercel)  →  Firebase RTDB
-                                                      ↓
-                                              Flutter (realtime)
+Sender ESP32  ──MQTT publish──►  HiveMQ Broker
+Receiver ESP32 ◄─MQTT sub/pub─┘         │
+                                        ▼
+                              Backend Node.js (MQTT subscriber + REST API)
+                                        │
+                                        ▼
+                              Firebase Realtime Database
+                                        │
+                                        ▼
+                              Flutter App (Firebase streams)
 ```
 
-No MQTT. No rule-based status on backend — ESP32 sends final `NORMAL` | `NOISE` | `DANGER`.
+- **Produksi IoT:** ESP32 → MQTT → Backend subscriber → Firebase
+- **Testing:** REST API (`POST /api/sensor`, dll.) tetap tersedia
+- **Flutter:** tetap Firebase-only (tanpa MQTT client)
 
 ## Backend
 
 ```bash
 cd backend
 cp .env.example .env
-# isi FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY, FIREBASE_DATABASE_URL
+# isi FIREBASE_* + MQTT_* (HiveMQ Cloud)
 npm install
-npm run dev          # local: http://localhost:3000
-vercel --prod        # production
+npm start            # Express + MQTT subscriber (local / Railway)
 ```
+
+**Deploy ke Railway:** set Root Directory = `backend`, add ENV vars, deploy. Health check: `GET /health`.
+
+Legacy Vercel REST-only masih tersedia via `api/index.js` (tanpa MQTT persistent).
 
 Endpoints: `GET /api/status`, `POST /api/sensor`, `GET /api/device/:id`, `GET /api/history`.
 

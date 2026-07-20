@@ -7,6 +7,7 @@ import '../models/history_model.dart';
 import '../models/monitoring_model.dart';
 import '../repositories/monitoring_repository.dart';
 import '../services/backend_status_service.dart';
+import '../services/firebase_service.dart';
 import '../utils/app_stage.dart';
 import '../utils/constants.dart';
 import '../utils/system_labels.dart';
@@ -16,13 +17,17 @@ class AppStateProvider extends ChangeNotifier {
   AppStateProvider({
     MonitoringRepository? repository,
     BackendStatusService? backendStatusService,
+    FirebaseService? firebaseService,
   })  : _repository = repository,
-        _backendStatus = backendStatusService ?? BackendStatusService();
+        _backendStatus = backendStatusService ?? BackendStatusService(),
+        _firebaseService = firebaseService;
 
   MonitoringRepository? _repository;
   final BackendStatusService _backendStatus;
+  final FirebaseService? _firebaseService;
 
   Timer? _pollTimer;
+  StreamSubscription<List<HistoryModel>>? _historySubscription;
   bool _disposed = false;
   bool _polling = false;
 
@@ -50,20 +55,17 @@ class AppStateProvider extends ChangeNotifier {
   bool get isLoading => _loading;
   int get stage => AppStage.current;
 
-  String get lastUpdateLabel =>
-      _monitoring.hasData && _monitoring.timestamp > 0
-          ? _monitoring.dateTime.toString()
-          : SystemLabels.lastUpdateNone;
+  String get lastUpdateLabel => _monitoring.hasData && _monitoring.timestamp > 0
+      ? _monitoring.dateTime.toString()
+      : SystemLabels.lastUpdateNone;
 
-  String get batteryLabel =>
-      _monitoring.battery == null
-          ? SystemLabels.placeholder
-          : '${_monitoring.battery}%';
+  String get batteryLabel => _monitoring.battery == null
+      ? SystemLabels.placeholder
+      : '${_monitoring.battery}%';
 
-  String get signalLabel =>
-      _monitoring.signal == null
-          ? SystemLabels.placeholder
-          : '${_monitoring.signal}';
+  String get signalLabel => _monitoring.signal == null
+      ? SystemLabels.placeholder
+      : '${_monitoring.signal}';
 
   bool get senderOnline => _senderLabel == SystemLabels.senderOnline;
   bool get receiverOnline => _receiverLabel == SystemLabels.receiverOnline;
@@ -99,6 +101,29 @@ class AppStateProvider extends ChangeNotifier {
 
     await refreshSystemStatus();
     _startPolling();
+  }
+
+  /// Mulai mendengarkan stream history dari Firebase.
+  void startHistoryStream() {
+    final firebase = _firebaseService;
+    if (firebase == null || !firebase.isInitialized) return;
+
+    _historySubscription?.cancel();
+    try {
+      _historySubscription = firebase.historyStream().listen(
+        (items) {
+          _history
+            ..clear()
+            ..addAll(items);
+          notifyListeners();
+        },
+        onError: (Object e) {
+          debugPrint('[AppStateProvider] history stream error: $e');
+        },
+      );
+    } catch (e) {
+      debugPrint('[AppStateProvider] startHistoryStream error: $e');
+    }
   }
 
   /// Sinkronkan data monitoring + label Sender/Receiver dari Dashboard.
@@ -166,31 +191,39 @@ class AppStateProvider extends ChangeNotifier {
     );
   }
 
-  /// Backend: GET /api/status (jika URL dikonfigurasi).
-  /// Fallback: heartbeat Firebase `backend/status` dari ping backend.
+  /// Backend: GET {backendBaseUrl}/api/status (production REST).
   Future<void> _refreshBackendStatus() async {
     if (!AppStage.backendEnabled) {
-      _setBackend(SystemLabels.backendNotConfigured);
+      _setBackend(SystemLabels.backendOffline);
       return;
     }
 
-    final url = AppConstants.backendHealthUrl.trim();
+    final url = AppConstants.backendBaseUrl.trim();
+    if (url.isEmpty) {
+      _setBackend(SystemLabels.backendError);
+      return;
+    }
 
-    if (AppStage.backendHealthCheckEnabled && url.isNotEmpty) {
+    if (AppStage.backendHealthCheckEnabled) {
       final result = await _backendStatus.check(url);
-      if (!result.configured) {
-        _setBackend(SystemLabels.backendNotConfigured);
-        return;
-      }
       if (result.backendOnline) {
         _setBackend(SystemLabels.backendOnline);
+        return;
+      }
+      // Reachable tapi payload tidak sehat → ERROR; tidak reachable → OFFLINE.
+      if (result.reachable && result.error != null) {
+        _setBackend(SystemLabels.backendError);
+        return;
+      }
+      if (!result.reachable) {
+        _setBackend(SystemLabels.backendOffline);
         return;
       }
       _setBackend(SystemLabels.backendOffline);
       return;
     }
 
-    // URL kosong — baca heartbeat yang ditulis backend saat /api/status & sensor.
+    // Fallback (tahap < 4): heartbeat Firebase `backend/status`.
     final heartbeatOnline = await _readBackendHeartbeat();
     if (heartbeatOnline == true) {
       _setBackend(SystemLabels.backendOnline);
@@ -200,7 +233,6 @@ class AppStateProvider extends ChangeNotifier {
       _setBackend(SystemLabels.backendOffline);
       return;
     }
-    // Gagal baca Firebase — tetap Checking, bukan "Not Configured".
     _setBackend(SystemLabels.backendChecking);
   }
 
@@ -287,6 +319,7 @@ class AppStateProvider extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _pollTimer?.cancel();
+    _historySubscription?.cancel();
     _backendStatus.dispose();
     super.dispose();
   }

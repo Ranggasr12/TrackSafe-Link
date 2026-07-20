@@ -14,8 +14,14 @@ class MonitoringModel {
   final double? receiverLongitude;
   final double? speed;
   final int timestamp;
+  final int? lastUpdate;
   final bool online;
   final bool hasData;
+  final String? deviceType;
+  final String? pairedSender;
+  final String? pairedReceiver;
+  final bool? alarm;
+  final String? connectionStatus;
 
   /// Status koneksi dari Backend Device Status Engine (OFF/WAITING/CONNECTING/ONLINE).
   /// Null jika perangkat belum menulis field ini (fallback resolver lokal).
@@ -28,6 +34,7 @@ class MonitoringModel {
     required this.battery,
     required this.signal,
     required this.timestamp,
+    this.lastUpdate,
     this.latitude,
     this.longitude,
     this.receiverLatitude,
@@ -35,6 +42,11 @@ class MonitoringModel {
     this.speed,
     this.online = false,
     this.hasData = false,
+    this.deviceType,
+    this.pairedSender,
+    this.pairedReceiver,
+    this.alarm,
+    this.connectionStatus,
     this.linkStatus,
   });
 
@@ -51,8 +63,14 @@ class MonitoringModel {
       receiverLongitude: null,
       speed: null,
       timestamp: 0,
+      lastUpdate: null,
       online: false,
       hasData: false,
+      deviceType: null,
+      pairedSender: null,
+      pairedReceiver: null,
+      alarm: null,
+      connectionStatus: null,
       linkStatus: null,
     );
   }
@@ -125,10 +143,27 @@ class MonitoringModel {
       receiverLongitude: parseReceiverLongitude(map),
       speed: parseDouble(map['speed']),
       timestamp: parseInt(map['timestamp']) ?? 0,
+      lastUpdate: parseInt(map['lastUpdate']) ?? parseInt(map['lastUpdated']),
       online: map['online'] == true,
       hasData: true,
+      deviceType: map['deviceType']?.toString(),
+      pairedSender: map['pairedSender']?.toString(),
+      pairedReceiver: map['pairedReceiver']?.toString(),
+      alarm: map['alarm'] == true,
+      connectionStatus: map['connectionStatus']?.toString(),
       linkStatus: map['linkStatus']?.toString(),
     );
+  }
+
+  /// Effective timestamp for offline detection (ms).
+  int get effectiveTimeMs {
+    if (lastUpdate != null && lastUpdate! > 0) {
+      return lastUpdate! < 1000000000000 ? lastUpdate! * 1000 : lastUpdate!;
+    }
+    if (timestamp > 0) {
+      return timestamp < 1000000000000 ? timestamp * 1000 : timestamp;
+    }
+    return 0;
   }
 
   Map<String, dynamic> toMap() {

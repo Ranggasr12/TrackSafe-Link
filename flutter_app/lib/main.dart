@@ -50,8 +50,13 @@ Future<void> main() async {
   final monitoringRepo = MonitoringRepository(firebaseService: firebaseService);
   final monitoringProvider = MonitoringProvider(repository: monitoringRepo);
 
-  final appState = AppStateProvider(repository: monitoringRepo);
+  final appState = AppStateProvider(
+    repository: monitoringRepo,
+    firebaseService: firebaseService,
+  );
   await appState.initStage1();
+  // Start history stream after Firebase is initialized
+  appState.startHistoryStream();
 
   debugPrint(
     'TrackSafe Link started — AppStage=${AppStage.current} '

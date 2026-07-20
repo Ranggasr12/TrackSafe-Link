@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/history_model.dart';
 import '../providers/app_state_provider.dart';
+import '../theme/app_colors.dart';
+import '../utils/constants.dart';
+import '../utils/status_helper.dart';
 
-/// History TAHAP 1 — kosong (belum ada data Firebase).
+/// History — realtime dari Firebase `history/`.
 class HistoryScreen extends StatelessWidget {
   const HistoryScreen({super.key});
 
@@ -11,7 +15,9 @@ class HistoryScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Consumer<AppStateProvider>(
       builder: (context, state, _) {
-        if (state.history.isEmpty) {
+        final items = state.history;
+
+        if (items.isEmpty) {
           return Center(
             child: Padding(
               padding: const EdgeInsets.all(32),
@@ -29,8 +35,8 @@ class HistoryScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Riwayat akan muncul setelah ESP32 mengirim data\n'
-                    'melalui Backend ke Firebase (tahap berikutnya).',
+                    'Riwayat akan muncul setelah perangkat mengirim data\n'
+                    'melalui Backend ke Firebase.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 13,
@@ -44,9 +50,174 @@ class HistoryScreen extends StatelessWidget {
           );
         }
 
-        // TAHAP 2+: ListView history dari Firebase
-        return const SizedBox.shrink();
+        return ListView.separated(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+          itemCount: items.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (context, index) {
+            final item = items[index];
+            return _HistoryTile(item: item);
+          },
+        );
       },
+    );
+  }
+}
+
+class _HistoryTile extends StatelessWidget {
+  const _HistoryTile({required this.item});
+
+  final HistoryModel item;
+
+  Color _eventColor() {
+    switch (item.eventType.toLowerCase()) {
+      case 'alarm':
+      case 'danger':
+        return AppColors.danger;
+      case 'sensor_warning':
+      case 'noise':
+        return AppColors.noise;
+      case 'pairing':
+      case 'online':
+        return AppColors.online;
+      case 'unpairing':
+      case 'offline':
+      case 'receiver_disconnect':
+        return AppColors.unknown;
+      case 'battery_warning':
+      case 'distance_warning':
+        return AppColors.noise;
+      default:
+        return AppColors.primary;
+    }
+  }
+
+  IconData _eventIcon() {
+    switch (item.eventType.toLowerCase()) {
+      case 'pairing':
+        return Icons.link;
+      case 'unpairing':
+        return Icons.link_off;
+      case 'alarm':
+        return Icons.notifications_active;
+      case 'offline':
+      case 'heartbeat_timeout':
+        return Icons.cloud_off;
+      case 'online':
+        return Icons.cloud_done;
+      case 'battery_warning':
+        return Icons.battery_alert;
+      case 'distance_warning':
+        return Icons.straighten;
+      default:
+        return Icons.history;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = _eventColor();
+    final statusTitle = SensorStatus.isLiveEsp32(item.status)
+        ? StatusHelper.title(item.status)
+        : item.status;
+
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            CircleAvatar(
+              backgroundColor: color.withValues(alpha: 0.15),
+              child: Icon(_eventIcon(), color: color, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.eventLabel,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    item.description.isNotEmpty
+                        ? item.description
+                        : '${item.deviceId} — $statusTitle',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                  if (item.targetDeviceId != null &&
+                      item.targetDeviceId!.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'Target: ${item.targetDeviceId}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.hintColor,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 4,
+                    children: [
+                      _MetaChip(
+                        icon: Icons.schedule,
+                        label: '${item.dateLabel} ${item.timeLabel}',
+                      ),
+                      if (item.battery != null)
+                        _MetaChip(
+                          icon: Icons.battery_std,
+                          label: '${item.battery}%',
+                        ),
+                      if (item.signal != null)
+                        _MetaChip(
+                          icon: Icons.signal_cellular_alt,
+                          label: '${item.signal}',
+                        ),
+                      if (item.distance > 0)
+                        _MetaChip(
+                          icon: Icons.straighten,
+                          label: '${item.distance} cm',
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MetaChip extends StatelessWidget {
+  const _MetaChip({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14, color: Theme.of(context).hintColor),
+        const SizedBox(width: 4),
+        Text(
+          label,
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: Theme.of(context).hintColor,
+              ),
+        ),
+      ],
     );
   }
 }
