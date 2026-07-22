@@ -1,11 +1,24 @@
 /**
  * MQTT topic + payload parsing and validation.
+ *
+ * Supports TWO topic formats:
+ *   Old: {root}/{kind}/{deviceId}        e.g. tracksafe/sender/sender01
+ *   New: {root}/device/{deviceId}/{kind}  e.g. tracksafe/device/sender01/telemetry
  */
 
 const mqttConfig = require('../config/mqtt.config');
 
 /**
- * Parse topic {MQTT_TOPIC_ROOT}/{kind}/{deviceId}
+ * Parse topic — supports both old and new ESP32 topic formats.
+ *
+ * Old format: {MQTT_TOPIC_ROOT}/{kind}/{deviceId}
+ *   e.g. tracksafe/sender/sender01
+ *   → kind=sender, deviceId=sender01
+ *
+ * New format: {MQTT_TOPIC_ROOT}/device/{deviceId}/{kind}
+ *   e.g. tracksafe/device/sender01/telemetry
+ *   → kind=telemetry, deviceId=sender01
+ *
  * @param {string} topic
  * @returns {{ ok: true, kind: string, deviceId: string } | { ok: false, error: string }}
  */
@@ -17,12 +30,24 @@ function parseTopic(topic) {
 
   const root = mqttConfig.getTopicRoot();
   const parts = raw.split('/').filter(Boolean);
+
+  // Minimum: root + kind + deviceId (3 parts) or root + device + deviceId + kind (4 parts)
   if (parts.length < 3 || parts[0] !== root) {
     return { ok: false, error: `Invalid topic root: ${raw}` };
   }
 
-  const kind = parts[1];
-  const deviceId = parts.slice(2).join('/');
+  let kind, deviceId;
+
+  // Detect format: if parts[1] === 'device', it's the new format
+  if (parts[1] === 'device' && parts.length >= 4) {
+    // New format: tracksafe/device/{deviceId}/{kind}
+    deviceId = parts[2];
+    kind = parts.slice(3).join('/');
+  } else {
+    // Old format: tracksafe/{kind}/{deviceId}
+    kind = parts[1];
+    deviceId = parts.slice(2).join('/');
+  }
 
   if (!mqttConfig.VALID_KINDS.has(kind)) {
     return { ok: false, error: `Unknown topic kind: ${kind}` };
@@ -76,17 +101,45 @@ function validatePayload(kind, payload) {
         return { ok: false, error: 'sender requires status or rule' };
       }
       break;
+
+    case 'telemetry':
+      // Telemetry: deviceId required, status or rule required
+      if (payload.deviceId != null && typeof payload.deviceId !== 'string') {
+        return { ok: false, error: 'deviceId must be string' };
+      }
+      if (payload.status == null && payload.rule == null) {
+        return { ok: false, error: 'telemetry requires status or rule' };
+      }
+      break;
+
+    case 'status':
+      // Status: deviceId required, status or rule required
+      if (payload.deviceId != null && typeof payload.deviceId !== 'string') {
+        return { ok: false, error: 'deviceId must be string' };
+      }
+      if (payload.status == null && payload.rule == null) {
+        return { ok: false, error: 'status requires status or rule' };
+      }
+      break;
+
     case 'receiver':
     case 'heartbeat':
       break;
+
     case 'alarm':
       if (payload.alarm === undefined && payload.status == null) {
         return { ok: false, error: 'alarm requires alarm or status field' };
       }
       break;
+
+    case 'command':
+      // Command: any payload is valid (deviceId optional)
+      break;
+
     case 'config':
     case 'pairing':
       break;
+
     default:
       return { ok: false, error: `Unsupported kind: ${kind}` };
   }

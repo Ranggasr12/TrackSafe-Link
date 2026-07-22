@@ -13,6 +13,7 @@ class StatusHelper {
       case SensorStatus.noise:
         return AppColors.noise;
       case SensorStatus.normal:
+      case SensorStatus.safe:
         return AppColors.normal;
       case SensorStatus.offline:
         return AppColors.offline;
@@ -29,6 +30,7 @@ class StatusHelper {
       case SensorStatus.noise:
         return AppColors.noiseSoft;
       case SensorStatus.normal:
+      case SensorStatus.safe:
         return AppColors.normalSoft;
       case SensorStatus.offline:
         return AppColors.offlineSoft;
@@ -45,6 +47,7 @@ class StatusHelper {
       case SensorStatus.noise:
         return Icons.warning_amber_rounded;
       case SensorStatus.normal:
+      case SensorStatus.safe:
         return Icons.check_circle;
       case SensorStatus.offline:
         return Icons.cloud_off;
@@ -61,6 +64,7 @@ class StatusHelper {
       case SensorStatus.noise:
         return 'NOISE TERDETEKSI';
       case SensorStatus.normal:
+      case SensorStatus.safe:
         return 'AMAN';
       case SensorStatus.offline:
         return 'SENDER OFFLINE';
@@ -77,9 +81,10 @@ class StatusHelper {
       case SensorStatus.noise:
         return 'Sedang memverifikasi kondisi.';
       case SensorStatus.normal:
+      case SensorStatus.safe:
         return 'Tidak ada kereta.';
       case SensorStatus.offline:
-        return 'Data terakhir sudah lebih dari 30 detik. Menunggu ESP32.';
+        return 'Data terakhir sudah lebih dari 15 detik. Menunggu ESP32.';
       case SensorStatus.unknown:
       default:
         return 'ESP32 belum pernah mengirim data ke Firebase.';

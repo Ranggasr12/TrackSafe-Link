@@ -6,19 +6,27 @@ import 'package:firebase_database/firebase_database.dart';
 
 import '../models/monitoring_model.dart';
 import '../models/history_model.dart';
+import '../models/pairing_model.dart';
 import '../utils/constants.dart';
 
 /// FirebaseService — read-only layer untuk Firebase Realtime Database.
 ///
-/// TIDAK mengandung business logic, TIDAK mengubah state provider,
-/// TIDAK mengubah UI. Hanya menyediakan stream data realtime
-/// dari Firebase RTDB.
+/// Sesuai arsitektur final TrackSafe:
+/// 1. Flutter TIDAK connect MQTT
+/// 2. Flutter TIDAK publish/subscribe MQTT
+/// 3. Flutter TIDAK polling backend
+/// 4. Flutter HANYA membaca Firebase RTDB
 ///
 /// Method:
-/// - connect()          : inisialisasi koneksi Firebase
-/// - monitoringStream() : stream data device live
-/// - historyStream()    : stream daftar riwayat
-/// - isConnected()      : cek status koneksi Firebase
+/// - connect()                    : inisialisasi koneksi Firebase
+/// - monitoringStream()           : stream data device (sender) live
+/// - deviceStream()               : stream data device arbitrary (receiver)
+/// - historyStream()              : stream daftar riwayat
+/// - pairingStream()              : stream data pairing
+/// - devicesListStream()          : stream daftar devices
+/// - backendStatusStream()        : stream status backend
+/// - isConnected()                : cek status koneksi Firebase
+/// - deviceExists()               : cek apakah device ada di Firebase (read only)
 class FirebaseService {
   FirebaseDatabase? _database;
   bool _initialized = false;
@@ -45,9 +53,6 @@ class FirebaseService {
   }
 
   /// Inisialisasi koneksi Firebase.
-  ///
-  /// Panggil sekali di awal aplikasi sebelum menggunakan stream.
-  /// Aman dipanggil berkali-kali (hanya akan execute sekali).
   Future<void> connect() async {
     if (_initialized) return;
     if (_connecting) {
@@ -92,7 +97,6 @@ class FirebaseService {
   String _resolveActiveDeviceId() {
     final active = _activeDeviceId?.trim();
     if (active != null && active.isNotEmpty) return active;
-    // Device ID harus berasal dari Device Pairing — tidak hardcode sender01.
     throw StateError(
       '[FirebaseService] Device ID belum di-pair. '
       'Lakukan Device Pairing terlebih dahulu.',
@@ -112,6 +116,18 @@ class FirebaseService {
   DatabaseReference _historyRef() {
     _guardInitialized();
     return _database!.ref(AppConstants.historyPath);
+  }
+
+  /// Reference ke node pairings.
+  DatabaseReference _pairingsRef() {
+    _guardInitialized();
+    return _database!.ref('pairings');
+  }
+
+  /// Reference ke node backend/status.
+  DatabaseReference _backendStatusRef() {
+    _guardInitialized();
+    return _database!.ref('backend/status');
   }
 
   /// Reference ke node .info/connected (built-in Firebase).
@@ -142,13 +158,14 @@ class FirebaseService {
   }
 
   // --------------------------------------------------
-  // PUBLIC STREAMS
+  // PUBLIC STREAMS — READ ONLY
   // --------------------------------------------------
 
   /// Stream data monitoring device secara realtime.
   ///
-  /// Yield [MonitoringModel] setiap kali ada perubahan
-  /// di node `devices/{deviceId}` (Sender hasil pairing).
+  /// Membaca dari `devices/{deviceId}` (Sender hasil pairing).
+  /// Data: status, distance, battery, signal, gps, deviceType,
+  ///       lastSeen, linkStatus, pairedReceiver, limitSwitch
   Stream<MonitoringModel> monitoringStream() {
     _guardInitialized();
     final deviceId = _resolveActiveDeviceId();
@@ -169,7 +186,7 @@ class FirebaseService {
     });
   }
 
-  /// Cek apakah node `devices/{deviceId}` ada di Firebase.
+  /// Cek apakah node `devices/{deviceId}` ada di Firebase (read only).
   Future<bool> deviceExists(String deviceId) async {
     _guardInitialized();
     final id = deviceId.trim();
@@ -191,6 +208,7 @@ class FirebaseService {
   }
 
   /// Stream telemetry perangkat arbitrary (mis. Receiver hasil pairing).
+  /// Membaca dari `devices/{deviceId}`.
   Stream<MonitoringModel> deviceStream(String deviceId) {
     _guardInitialized();
     final id = deviceId.trim();
@@ -211,8 +229,7 @@ class FirebaseService {
 
   /// Stream daftar history secara realtime.
   ///
-  /// Yield [List<HistoryModel>] setiap kali ada perubahan
-  /// di node `history/`. Dibatasi 100 data terbaru.
+  /// Membaca dari `history/`. Dibatasi 100 data terbaru.
   Stream<List<HistoryModel>> historyStream() {
     _guardInitialized();
 
@@ -246,10 +263,87 @@ class FirebaseService {
     });
   }
 
-  /// Cek status koneksi ke Firebase Realtime Database.
+  /// Stream data pairing — membaca dari `pairings/`.
+  Stream<List<PairingModel>> pairingStream() {
+    _guardInitialized();
+
+    return _pairingsRef().onValue.map((DatabaseEvent event) {
+      try {
+        final List<PairingModel> items = [];
+        final raw = _toMap(event.snapshot.value);
+
+        if (raw != null && raw.isNotEmpty) {
+          for (final entry in raw.entries) {
+            final key = entry.key.toString();
+            final value = _toMap(entry.value);
+            if (value != null) {
+              items.add(PairingModel.fromMap(value, id: key));
+            }
+          }
+        }
+
+        return items;
+      } catch (error) {
+        debugPrint('[FirebaseService] pairingStream parse error: $error');
+        return [];
+      }
+    });
+  }
+
+  /// Stream daftar semua devices — membaca dari `devices/`.
+  Stream<Map<String, MonitoringModel>> devicesListStream() {
+    _guardInitialized();
+
+    return _database!.ref(AppConstants.devicesPath).onValue.map(
+      (DatabaseEvent event) {
+        try {
+          final Map<String, MonitoringModel> result = {};
+          final raw = _toMap(event.snapshot.value);
+
+          if (raw != null && raw.isNotEmpty) {
+            for (final entry in raw.entries) {
+              final key = entry.key.toString();
+              final value = _toMap(entry.value);
+              if (value != null) {
+                result[key] = MonitoringModel.fromMap(value);
+              }
+            }
+          }
+
+          return result;
+        } catch (error) {
+          debugPrint(
+            '[FirebaseService] devicesListStream parse error: $error',
+          );
+          return {};
+        }
+      },
+    );
+  }
+
+  /// Stream status backend — membaca dari `backend/status`.
   ///
-  /// Menggunakan node built-in `.info/connected`.
-  /// Timeout 5 detik jika tidak ada response.
+  /// Data: online, timestamp, firebaseConnected, etc.
+  Stream<Map<String, dynamic>> backendStatusStream() {
+    _guardInitialized();
+
+    return _backendStatusRef().onValue.map((DatabaseEvent event) {
+      try {
+        final data = _toMap(event.snapshot.value);
+        if (data == null || data.isEmpty) {
+          return <String, dynamic>{};
+        }
+        return Map<String, dynamic>.from(data);
+      } catch (error) {
+        debugPrint(
+          '[FirebaseService] backendStatusStream parse error: $error',
+        );
+        return <String, dynamic>{};
+      }
+    });
+  }
+
+  /// Cek status koneksi ke Firebase Realtime Database.
   Future<bool> isConnected() async {
     try {
       if (!_initialized || _database == null) return false;

@@ -13,9 +13,11 @@ import '../utils/app_stage.dart';
 class NotificationListenerWidget extends StatefulWidget {
   const NotificationListenerWidget({
     super.key,
+    required this.orchestrator,
     required this.child,
   });
 
+  final NotificationOrchestrator orchestrator;
   final Widget child;
 
   @override
@@ -25,8 +27,6 @@ class NotificationListenerWidget extends StatefulWidget {
 
 class _NotificationListenerWidgetState extends State<NotificationListenerWidget>
     with WidgetsBindingObserver {
-  final NotificationOrchestrator _orchestrator =
-      NotificationOrchestrator.instance;
   String? _lastEvaluatedStatus;
   bool? _lastNotificationEnabled;
 
@@ -46,7 +46,6 @@ class _NotificationListenerWidgetState extends State<NotificationListenerWidget>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // Hanya update lifecycle — jangan evaluate ulang jika status tidak berubah.
-    _orchestrator.updateLifecycle(state);
   }
 
   void _scheduleEvaluate() {
@@ -64,7 +63,7 @@ class _NotificationListenerWidgetState extends State<NotificationListenerWidget>
     final monitoring = context.read<MonitoringProvider>();
     final settings = context.read<SettingsProvider>();
 
-    await _orchestrator.evaluate(
+    await widget.orchestrator.evaluate(
       currentStatus: monitoring.currentStatus,
       notificationEnabled: settings.notificationEnabled,
     );
@@ -91,7 +90,7 @@ class _NotificationListenerWidgetState extends State<NotificationListenerWidget>
           _lastNotificationEnabled = enabled;
           WidgetsBinding.instance.addPostFrameCallback((_) async {
             if (!mounted) return;
-            await _orchestrator.evaluate(
+            await widget.orchestrator.evaluate(
               currentStatus: status,
               notificationEnabled: enabled,
             );

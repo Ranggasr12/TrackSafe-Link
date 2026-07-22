@@ -6,32 +6,31 @@ import 'package:flutter/foundation.dart';
 import '../models/history_model.dart';
 import '../models/monitoring_model.dart';
 import '../repositories/monitoring_repository.dart';
-import '../services/backend_status_service.dart';
 import '../services/firebase_service.dart';
 import '../utils/app_stage.dart';
 import '../utils/constants.dart';
 import '../utils/system_labels.dart';
 
-/// State UI sistem — Application Status dari /api/status + Firebase nyata.
+/// State UI sistem — membaca status dari Firebase Realtime Database.
+///
+/// Sesuai arsitektur final:
+/// - TIDAK polling HTTP ke backend
+/// - TIDAK menggunakan HttpClient/BackendStatusService
+/// - HANYA membaca dari Firebase RTDB
 class AppStateProvider extends ChangeNotifier {
   AppStateProvider({
     MonitoringRepository? repository,
-    BackendStatusService? backendStatusService,
     FirebaseService? firebaseService,
   })  : _repository = repository,
-        _backendStatus = backendStatusService ?? BackendStatusService(),
         _firebaseService = firebaseService;
 
   MonitoringRepository? _repository;
-  final BackendStatusService _backendStatus;
   final FirebaseService? _firebaseService;
 
-  Timer? _pollTimer;
   StreamSubscription<List<HistoryModel>>? _historySubscription;
-  bool _disposed = false;
-  bool _polling = false;
+  StreamSubscription<Map<String, dynamic>>? _backendStatusSubscription;
+  StreamSubscription<DatabaseEvent>? _firebaseConnectionSubscription;
 
-  String _applicationMode = SystemLabels.modeDevelopment;
   String _backendLabel = SystemLabels.backendChecking;
   String _firebaseLabel = SystemLabels.firebaseChecking;
   String _senderLabel = SystemLabels.senderWaiting;
@@ -43,7 +42,6 @@ class AppStateProvider extends ChangeNotifier {
 
   bool _loading = false;
 
-  String get applicationMode => _applicationMode;
   String get backendLabel => _backendLabel;
   String get firebaseLabel => _firebaseLabel;
   String get senderLabel => _senderLabel;
@@ -53,7 +51,6 @@ class AppStateProvider extends ChangeNotifier {
   MonitoringModel get monitoring => _monitoring;
   List<HistoryModel> get history => List.unmodifiable(_history);
   bool get isLoading => _loading;
-  int get stage => AppStage.current;
 
   String get lastUpdateLabel => _monitoring.hasData && _monitoring.timestamp > 0
       ? _monitoring.dateTime.toString()
@@ -78,14 +75,11 @@ class AppStateProvider extends ChangeNotifier {
     _repository = repository;
   }
 
-  /// Inisialisasi label awal, lalu mulai poll status nyata.
+  /// Inisialisasi label awal, lalu mulai stream dari Firebase.
   Future<void> initStage1() async {
     _loading = true;
     notifyListeners();
 
-    _applicationMode = AppStage.current >= 8
-        ? SystemLabels.modeProduction
-        : SystemLabels.modeDevelopment;
     _backendLabel = SystemLabels.backendChecking;
     _firebaseLabel = SystemLabels.firebaseChecking;
     _senderLabel = SystemLabels.senderWaiting;
@@ -99,8 +93,28 @@ class AppStateProvider extends ChangeNotifier {
     _loading = false;
     notifyListeners();
 
-    await refreshSystemStatus();
-    _startPolling();
+    // Tunggu Firebase terinisialisasi sebelum cek status
+    await _ensureFirebaseReady();
+    await _refreshSystemStatus();
+    _startBackendStream();
+    _startFirebaseConnectionStream();
+  }
+
+  /// Pastikan FirebaseService sudah connect sebelum cek status.
+  Future<void> _ensureFirebaseReady() async {
+    final firebase = _firebaseService;
+    if (firebase == null) return;
+
+    try {
+      if (!firebase.isInitialized) {
+        await firebase.connect();
+      }
+      _setFirebase(SystemLabels.firebaseConnected);
+      debugPrint('[AppStateProvider] Firebase ready');
+    } catch (e) {
+      debugPrint('[AppStateProvider] Firebase init error: $e');
+      _setFirebase(SystemLabels.firebaseNotConnected);
+    }
   }
 
   /// Mulai mendengarkan stream history dari Firebase.
@@ -115,6 +129,22 @@ class AppStateProvider extends ChangeNotifier {
           _history
             ..clear()
             ..addAll(items);
+
+          // Debug: log data received from Firebase stream
+          debugPrint(
+              '[AppStateProvider] History stream: ${items.length} items');
+          if (items.isNotEmpty) {
+            for (int i = 0; i < (items.length < 3 ? items.length : 3); i++) {
+              final item = items[i];
+              debugPrint(
+                '[AppStateProvider] History[$i]: '
+                'status="${item.status}", '
+                'eventType="${item.eventType}", '
+                'timestamp=${item.timestamp}',
+              );
+            }
+          }
+
           notifyListeners();
         },
         onError: (Object e) {
@@ -123,6 +153,62 @@ class AppStateProvider extends ChangeNotifier {
       );
     } catch (e) {
       debugPrint('[AppStateProvider] startHistoryStream error: $e');
+    }
+  }
+
+  /// Mulai stream .info/connected untuk memantau koneksi Firebase secara realtime.
+  void _startFirebaseConnectionStream() {
+    try {
+      _firebaseConnectionSubscription?.cancel();
+      _firebaseConnectionSubscription = FirebaseDatabase.instance
+          .ref('.info/connected')
+          .onValue
+          .listen((DatabaseEvent event) {
+        final connected = event.snapshot.value as bool? ?? false;
+        _setFirebase(
+          connected
+              ? SystemLabels.firebaseConnected
+              : SystemLabels.firebaseNotConnected,
+        );
+        debugPrint(
+          '[AppStateProvider] Firebase connection: ${connected ? "CONNECTED" : "DISCONNECTED"}',
+        );
+      }, onError: (Object e) {
+        debugPrint('[AppStateProvider] Firebase connection stream error: $e');
+        _setFirebase(SystemLabels.firebaseNotConnected);
+      });
+    } catch (e) {
+      debugPrint('[AppStateProvider] _startFirebaseConnectionStream error: $e');
+      _setFirebase(SystemLabels.firebaseNotConnected);
+    }
+  }
+
+  /// Mulai stream status backend dari Firebase (bukan polling HTTP).
+  void _startBackendStream() {
+    final firebase = _firebaseService;
+    if (firebase == null || !firebase.isInitialized) return;
+
+    _backendStatusSubscription?.cancel();
+    try {
+      _backendStatusSubscription = firebase.backendStatusStream().listen(
+        (status) {
+          if (status.isEmpty) {
+            _setBackend(SystemLabels.backendOffline);
+            return;
+          }
+          final online = status['online'] == true;
+          _setBackend(
+            online ? SystemLabels.backendOnline : SystemLabels.backendOffline,
+          );
+        },
+        onError: (Object e) {
+          debugPrint('[AppStateProvider] backend status stream error: $e');
+          _setBackend(SystemLabels.backendOffline);
+        },
+      );
+    } catch (e) {
+      debugPrint('[AppStateProvider] _startBackendStream error: $e');
+      _setBackend(SystemLabels.backendOffline);
     }
   }
 
@@ -166,74 +252,12 @@ class AppStateProvider extends ChangeNotifier {
     if (changed) notifyListeners();
   }
 
-  Future<void> refreshSystemStatus() async {
-    if (_polling || _disposed) return;
-    _polling = true;
+  Future<void> _refreshSystemStatus() async {
     try {
-      await Future.wait([
-        _refreshBackendStatus(),
-        _refreshFirebaseStatus(),
-      ]);
-    } finally {
-      _polling = false;
+      await _refreshFirebaseStatus();
+    } catch (_) {
+      // Silent catch — stream akan handle update selanjutnya
     }
-  }
-
-  void _startPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(
-      Duration(seconds: AppConstants.statusPollIntervalSec),
-      (_) {
-        if (!_disposed) {
-          refreshSystemStatus();
-        }
-      },
-    );
-  }
-
-  /// Backend: GET {backendBaseUrl}/api/status (production REST).
-  Future<void> _refreshBackendStatus() async {
-    if (!AppStage.backendEnabled) {
-      _setBackend(SystemLabels.backendOffline);
-      return;
-    }
-
-    final url = AppConstants.backendBaseUrl.trim();
-    if (url.isEmpty) {
-      _setBackend(SystemLabels.backendError);
-      return;
-    }
-
-    if (AppStage.backendHealthCheckEnabled) {
-      final result = await _backendStatus.check(url);
-      if (result.backendOnline) {
-        _setBackend(SystemLabels.backendOnline);
-        return;
-      }
-      // Reachable tapi payload tidak sehat → ERROR; tidak reachable → OFFLINE.
-      if (result.reachable && result.error != null) {
-        _setBackend(SystemLabels.backendError);
-        return;
-      }
-      if (!result.reachable) {
-        _setBackend(SystemLabels.backendOffline);
-        return;
-      }
-      _setBackend(SystemLabels.backendOffline);
-      return;
-    }
-
-    // Fallback (tahap < 4): heartbeat Firebase `backend/status`.
-    final heartbeatOnline = await _readBackendHeartbeat();
-    if (heartbeatOnline == true) {
-      _setBackend(SystemLabels.backendOnline);
-      return;
-    }
-    if (heartbeatOnline == false) {
-      _setBackend(SystemLabels.backendOffline);
-      return;
-    }
-    _setBackend(SystemLabels.backendChecking);
   }
 
   Future<void> _refreshFirebaseStatus() async {
@@ -270,39 +294,6 @@ class AppStateProvider extends ChangeNotifier {
     }
   }
 
-  /// Baca `backend/status` — diisi backend lewat pingFirebase / touchBackendHeartbeat.
-  /// Returns null jika gagal baca; true/false jika berhasil parse.
-  Future<bool?> _readBackendHeartbeat() async {
-    try {
-      final snap = await FirebaseDatabase.instance
-          .ref(AppConstants.backendStatusPath)
-          .get()
-          .timeout(const Duration(seconds: 5));
-      final value = snap.value;
-      if (value is! Map) return false;
-
-      final map = Map<dynamic, dynamic>.from(value);
-      final online = map['online'] == true;
-      final rawTs = map['timestamp'];
-      int ts = 0;
-      if (rawTs is int) {
-        ts = rawTs;
-      } else if (rawTs is double) {
-        ts = rawTs.toInt();
-      } else if (rawTs != null) {
-        ts = int.tryParse(rawTs.toString()) ?? 0;
-      }
-
-      if (!online || ts <= 0) return false;
-
-      final now = DateTime.now().millisecondsSinceEpoch;
-      final ageMs = now - ts;
-      return ageMs <= AppConstants.backendHeartbeatFreshSec * 1000;
-    } catch (_) {
-      return null;
-    }
-  }
-
   void _setBackend(String label) {
     if (_backendLabel == label) return;
     _backendLabel = label;
@@ -317,10 +308,9 @@ class AppStateProvider extends ChangeNotifier {
 
   @override
   void dispose() {
-    _disposed = true;
-    _pollTimer?.cancel();
     _historySubscription?.cancel();
-    _backendStatus.dispose();
+    _backendStatusSubscription?.cancel();
+    _firebaseConnectionSubscription?.cancel();
     super.dispose();
   }
 }

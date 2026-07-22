@@ -6,7 +6,6 @@ import '../providers/device_pairing_provider.dart';
 import '../providers/settings_provider.dart';
 import '../theme/app_colors.dart';
 import '../utils/app_stage.dart';
-import '../utils/constants.dart';
 import 'manage_devices_screen.dart';
 
 /// Setting TAHAP 1 — preferensi UI lokal saja.
@@ -49,13 +48,13 @@ class SettingScreen extends StatelessWidget {
             _Card(
               children: [
                 ListTile(
-                  leading: const Icon(Icons.volume_up, color: AppColors.primary),
+                  leading:
+                      const Icon(Icons.volume_up, color: AppColors.primary),
                   title: const Text('Volume Alarm'),
                   subtitle: Slider(
                     value: settings.alarmVolume,
-                    onChanged: AppStage.alarmEnabled
-                        ? settings.setAlarmVolume
-                        : null,
+                    onChanged:
+                        AppStage.alarmEnabled ? settings.setAlarmVolume : null,
                     min: 0,
                     max: 1,
                   ),
@@ -66,8 +65,9 @@ class SettingScreen extends StatelessWidget {
                       const Icon(Icons.vibration, color: AppColors.primary),
                   title: const Text('Vibration'),
                   value: settings.vibrationEnabled,
-                  onChanged:
-                      AppStage.alarmEnabled ? settings.setVibrationEnabled : null,
+                  onChanged: AppStage.alarmEnabled
+                      ? settings.setVibrationEnabled
+                      : null,
                 ),
                 SwitchListTile(
                   secondary: const Icon(
@@ -95,7 +95,8 @@ class SettingScreen extends StatelessWidget {
                 Consumer<DevicePairingProvider>(
                   builder: (context, pairing, _) {
                     return ListTile(
-                      leading: const Icon(Icons.devices, color: AppColors.primary),
+                      leading:
+                          const Icon(Icons.devices, color: AppColors.primary),
                       title: const Text('Manage Devices'),
                       subtitle: Text(
                         pairing.isPaired
@@ -122,35 +123,14 @@ class SettingScreen extends StatelessWidget {
                     fontWeight: FontWeight.w800,
                   ),
             ),
-            const SizedBox(height: 12),
             _Card(
               children: [
-                ListTile(
-                  leading: const Icon(Icons.layers, color: AppColors.primary),
-                  title: const Text('Development Stage'),
-                  subtitle: Text('TAHAP ${appState.stage} / 11 — TrackSafe Link'),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.info_outline, color: AppColors.primary),
-                  title: const Text('Aplikasi'),
-                  subtitle: Text('${AppConstants.appName} v1.0.0'),
-                ),
                 ListTile(
                   leading: Icon(
                     Icons.cloud_outlined,
                     color: appState.backendOnline
                         ? AppColors.online
                         : AppColors.unknown,
-                  ),
-                  title: const Text('Backend URL'),
-                  subtitle: Text(AppConstants.backendBaseUrl),
-                ),
-                ListTile(
-                  leading: Icon(
-                    Icons.monitor_heart_outlined,
-                    color: appState.backendOnline
-                        ? AppColors.online
-                        : AppColors.offline,
                   ),
                   title: const Text('Backend Status'),
                   subtitle: Text(appState.backendLabel),
@@ -166,20 +146,6 @@ class SettingScreen extends StatelessWidget {
                   subtitle: Text(appState.firebaseLabel),
                 ),
               ],
-            ),
-            const SizedBox(height: 24),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Text(
-                'Sprint 11 aktif: local notification saat app di background.\n'
-                'Notifikasi muncul saat status berubah ke NOISE, DANGER, atau OFFLINE.\n'
-                'Toggle Notification di atas untuk mengaktifkan / menonaktifkan.',
-                style: TextStyle(fontSize: 12, height: 1.5),
-              ),
             ),
           ],
         );

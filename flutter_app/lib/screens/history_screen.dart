@@ -4,18 +4,88 @@ import 'package:provider/provider.dart';
 import '../models/history_model.dart';
 import '../providers/app_state_provider.dart';
 import '../theme/app_colors.dart';
-import '../utils/constants.dart';
-import '../utils/status_helper.dart';
 
 /// History — realtime dari Firebase `history/`.
+/// Hanya menampilkan alarm Rule Base: SAFE, NOISE, DANGER.
 class HistoryScreen extends StatelessWidget {
   const HistoryScreen({super.key});
+
+  /// Filter: hanya tampilkan alarm Rule Base (SAFE, NOISE, DANGER).
+  /// eventType BUKAN event sistem.
+  /// Abaikan event sistem seperti BACKEND_RESTART, PAIR, ONLINE, OFFLINE, dll.
+  static List<HistoryModel> filterAlarmOnly(List<HistoryModel> items) {
+    // System event types yang HARUS dikecualikan
+    const systemEvents = <String>{
+      'ONLINE',
+      'OFFLINE',
+      'PAIR',
+      'UNPAIR',
+      'PAIRING',
+      'UNPAIRING',
+      'CONNECT',
+      'DISCONNECT',
+      'CONNECTED',
+      'DISCONNECTED',
+      'BACKEND_RESTART',
+      'SERVER_START',
+      'DEVICE_REGISTER',
+      'HEARTBEAT',
+      'GPS_UPDATE',
+      'BATTERY',
+      'SIGNAL',
+      'MQTT_CONNECTED',
+      'MQTT_DISCONNECTED',
+      'SYSTEM',
+      'BATTERY_UPDATE',
+      'SIGNAL_UPDATE',
+      'BACKEND_ONLINE',
+      'BACKEND_OFFLINE',
+    };
+
+    return items.where((item) {
+      // Status hanya SAFE, NOISE, DANGER
+      final s = item.status.toString().toUpperCase().trim();
+      if (s != 'SAFE' && s != 'NOISE' && s != 'DANGER') return false;
+
+      // eventType — jika merupakan event sistem, buang
+      final et = item.eventType.toString().toUpperCase().trim();
+      if (systemEvents.contains(et)) return false;
+
+      // eventType null, kosong, atau bukan sistem — izinkan
+      return true;
+    }).toList()
+      ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+  }
 
   @override
   Widget build(BuildContext context) {
     return Consumer<AppStateProvider>(
       builder: (context, state, _) {
-        final items = state.history;
+        final allItems = state.history;
+        final items = filterAlarmOnly(allItems);
+
+        // Debug: log for comparison with StatisticsScreen
+        debugPrint('[HISTORY] Total history: ${allItems.length}');
+        debugPrint('[HISTORY] After filterAlarmOnly: ${items.length}');
+        if (items.isNotEmpty) {
+          for (int i = 0; i < (items.length < 5 ? items.length : 5); i++) {
+            final item = items[i];
+            debugPrint(
+              '[HISTORY] Item[$i]: status=${item.status}, eventType=${item.eventType}, '
+              'timestamp=${item.timestamp}',
+            );
+          }
+        } else if (allItems.isNotEmpty) {
+          for (int i = 0;
+              i < (allItems.length < 5 ? allItems.length : 5);
+              i++) {
+            final item = allItems[i];
+            debugPrint(
+              '[HISTORY] RAW Item[$i]: status=${item.status}, eventType=${item.eventType}, '
+              'timestamp=${item.timestamp}',
+            );
+          }
+        }
 
         if (items.isEmpty) {
           return Center(
@@ -27,7 +97,7 @@ class HistoryScreen extends StatelessWidget {
                   Icon(Icons.history, size: 64, color: Colors.grey.shade400),
                   const SizedBox(height: 16),
                   const Text(
-                    'History kosong',
+                    'Riwayat Alarm Kosong',
                     style: TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w700,
@@ -35,8 +105,8 @@ class HistoryScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Riwayat akan muncul setelah perangkat mengirim data\n'
-                    'melalui Backend ke Firebase.',
+                    'Hanya menampilkan status SAFE, NOISE, dan DANGER.\n'
+                    'Event sistem tidak ditampilkan.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 13,
@@ -70,57 +140,26 @@ class _HistoryTile extends StatelessWidget {
   final HistoryModel item;
 
   Color _eventColor() {
-    switch (item.eventType.toLowerCase()) {
-      case 'alarm':
-      case 'danger':
-        return AppColors.danger;
-      case 'sensor_warning':
-      case 'noise':
-        return AppColors.noise;
-      case 'pairing':
-      case 'online':
-        return AppColors.online;
-      case 'unpairing':
-      case 'offline':
-      case 'receiver_disconnect':
-        return AppColors.unknown;
-      case 'battery_warning':
-      case 'distance_warning':
-        return AppColors.noise;
-      default:
-        return AppColors.primary;
-    }
+    final s = item.status.toString().toUpperCase().trim();
+    if (s == 'DANGER') return AppColors.danger;
+    if (s == 'NOISE') return AppColors.noise;
+    if (s == 'SAFE') return AppColors.normal;
+    return AppColors.primary;
   }
 
   IconData _eventIcon() {
-    switch (item.eventType.toLowerCase()) {
-      case 'pairing':
-        return Icons.link;
-      case 'unpairing':
-        return Icons.link_off;
-      case 'alarm':
-        return Icons.notifications_active;
-      case 'offline':
-      case 'heartbeat_timeout':
-        return Icons.cloud_off;
-      case 'online':
-        return Icons.cloud_done;
-      case 'battery_warning':
-        return Icons.battery_alert;
-      case 'distance_warning':
-        return Icons.straighten;
-      default:
-        return Icons.history;
-    }
+    final s = item.status.toString().toUpperCase().trim();
+    if (s == 'DANGER') return Icons.emergency;
+    if (s == 'NOISE') return Icons.warning_amber_rounded;
+    if (s == 'SAFE') return Icons.check_circle;
+    return Icons.history;
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final color = _eventColor();
-    final statusTitle = SensorStatus.isLiveEsp32(item.status)
-        ? StatusHelper.title(item.status)
-        : item.status;
+    final statusLabel = item.status.toString().toUpperCase().trim();
 
     return Card(
       elevation: 1,
@@ -140,16 +179,17 @@ class _HistoryTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    item.eventLabel,
+                    statusLabel,
                     style: theme.textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.w800,
+                      color: color,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     item.description.isNotEmpty
                         ? item.description
-                        : '${item.deviceId} — $statusTitle',
+                        : '${item.deviceId} — $statusLabel',
                     style: theme.textTheme.bodySmall,
                   ),
                   if (item.targetDeviceId != null &&

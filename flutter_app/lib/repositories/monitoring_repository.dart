@@ -5,17 +5,6 @@ import 'package:flutter/foundation.dart';
 import '../models/monitoring_model.dart';
 import '../services/firebase_service.dart';
 
-/// MonitoringRepository — abstraction layer antara Provider dan FirebaseService.
-///
-/// Bertanggung jawab sebagai penghubung untuk data monitoring realtime.
-/// Tidak mengandung business logic, tidak mengubah state Provider,
-/// tidak mengubah UI. Hanya menyediakan akses data terpusat.
-///
-/// Method:
-/// - connect()              : inisialisasi koneksi Firebase via service
-/// - monitoringStream()     : stream data monitoring realtime
-/// - getCurrentMonitoring() : snapshot data monitoring sekali baca
-/// - isConnected()          : status koneksi Firebase
 class MonitoringRepository {
   final FirebaseService _firebaseService;
 
@@ -59,11 +48,6 @@ class MonitoringRepository {
     });
   }
 
-  /// Mengambil data monitoring sekali baca (snapshot).
-  ///
-  /// Berguna untuk inisialisasi awal atau data point tunggal.
-  /// Jika sudah ada cache, gunakan [cachedMonitoring] sebagai
-  /// nilai awal sementara menunggu stream.
   Future<MonitoringModel> getCurrentMonitoring() async {
     _ensureConnected();
 

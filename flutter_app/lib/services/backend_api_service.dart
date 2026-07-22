@@ -6,6 +6,14 @@ import 'package:http/http.dart' as http;
 import '../utils/constants.dart';
 
 /// REST client for TrackSafe backend device management.
+///
+/// Sesuai arsitektur final, Flutter hanya menggunakan backend untuk:
+/// - POST /api/device/pair
+/// - POST /api/device/unpair
+/// - GET /api/device/list
+/// - GET /api/device/pairing
+///
+/// Selain itu gunakan Firebase Realtime Database.
 class BackendApiService {
   BackendApiService({http.Client? client}) : _client = client ?? http.Client();
 
@@ -13,7 +21,8 @@ class BackendApiService {
 
   String get _base => AppConstants.backendBaseUrl.replaceAll(RegExp(r'/$'), '');
 
-  Future<Map<String, dynamic>?> _post(String path, Map<String, dynamic> body) async {
+  Future<Map<String, dynamic>?> _post(
+      String path, Map<String, dynamic> body) async {
     try {
       final response = await _client
           .post(
@@ -57,6 +66,7 @@ class BackendApiService {
     }
   }
 
+  /// POST /api/device/pair
   Future<bool> pairDevices({
     required String senderId,
     required String receiverId,
@@ -68,6 +78,7 @@ class BackendApiService {
     return result?['success'] == true;
   }
 
+  /// POST /api/device/unpair
   Future<bool> unpairDevices({
     String? senderId,
     String? receiverId,
@@ -83,14 +94,16 @@ class BackendApiService {
     return result?['success'] == true;
   }
 
+  /// GET /api/device/pairing/{deviceId}
   Future<Map<String, dynamic>?> getPairing(String deviceId) async {
     final id = deviceId.trim();
     if (id.isEmpty) return null;
     return _get('/api/device/pairing/$id');
   }
 
-  Future<Map<String, dynamic>?> getBackendStatus() async {
-    return _get('/api/backend/status');
+  /// GET /api/device/list
+  Future<Map<String, dynamic>?> getDeviceList() async {
+    return _get('/api/device/list');
   }
 
   void dispose() {

@@ -105,6 +105,10 @@ const VALID_KINDS = new Set([
   'heartbeat',
   'config',
   'pairing',
+  // ESP32 v2 firmware — new topic structure tracksafe/device/{id}/{kind}
+  'telemetry',
+  'status',
+  'command',
 ]);
 
 /** Lazy getters — baca ENV saat runtime (setelah dotenv.load). */

@@ -1,35 +1,23 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
+import 'package:intl/intl.dart';
 
+import '../models/history_model.dart';
 import '../models/monitoring_model.dart';
 import '../providers/app_state_provider.dart';
 import '../providers/device_pairing_provider.dart';
 import '../providers/monitoring_provider.dart';
-import '../providers/settings_provider.dart';
-import '../services/local_notification_service.dart';
 import '../theme/app_colors.dart';
-import '../utils/app_stage.dart';
 import '../utils/constants.dart';
-import '../utils/device_link_status.dart';
 import '../utils/formatters.dart';
-import '../utils/offline_detector.dart';
 import '../utils/system_labels.dart';
-import '../widgets/device_monitor_card.dart';
-import '../widgets/status_card.dart';
 
-/// Dashboard — membaca data dari MonitoringProvider.
-///
-/// State yang ditampilkan:
-/// - Loading   : indikator loading
-/// - Error     : Card error
-/// - No Data   : teks "Menunggu data ESP32"
-/// - Data      : monitoring dari Firebase
+/// Dashboard — tampilan utama TrackSafe.
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
@@ -39,32 +27,47 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   bool _initialized = false;
-  LatLng? _workerPosition;
+  LatLng? _phonePosition;
   StreamSubscription<Position>? _workerSubscription;
-  DeviceLinkStatus? _lastSenderConnection;
-  DeviceLinkStatus? _lastReceiverConnection;
-  String? _lastReceiverDebugKey;
-
-  /// True jika perangkat pernah ONLINE sejak aplikasi dibuka (sesi ini).
-  bool _senderSeenThisSession = false;
-  bool _receiverSeenThisSession = false;
-  String? _pairedSessionKey;
+  String _currentTime = '';
+  Timer? _clockTimer;
+  bool _workerReady = false;
+  bool _phoneGpsAvailable = false;
+  bool _gpsDialogShown = false;
 
   @override
   void initState() {
     super.initState();
     _startWorkerTracking();
+    _updateClock();
+    _clockTimer =
+        Timer.periodic(const Duration(seconds: 1), (_) => _updateClock());
+  }
+
+  void _updateClock() {
+    if (!mounted) return;
+    setState(() {
+      _currentTime = DateFormat('HH:mm:ss', 'id_ID').format(DateTime.now());
+    });
   }
 
   @override
   void dispose() {
     _workerSubscription?.cancel();
+    _clockTimer?.cancel();
     super.dispose();
   }
 
   Future<void> _startWorkerTracking() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return;
+    if (!serviceEnabled) {
+      // Tampilkan dialog minta user mengaktifkan GPS
+      if (!_gpsDialogShown && mounted) {
+        _gpsDialogShown = true;
+        _showEnableGpsDialog();
+      }
+      return;
+    }
 
     var permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
@@ -76,17 +79,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     try {
-      final current = await Geolocator.getCurrentPosition();
+      final current = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.best,
+          timeLimit: Duration(seconds: 8),
+        ),
+      );
       if (!mounted) return;
       setState(() {
-        _workerPosition = LatLng(current.latitude, current.longitude);
+        _phonePosition = LatLng(current.latitude, current.longitude);
+        _phoneGpsAvailable = true;
+        _workerReady = true;
       });
     } catch (_) {
-      // Lanjut ke stream jika posisi awal gagal.
+      // GPS gagal — Worker tidak akan tampil
+      if (!mounted) return;
+      setState(() {
+        _phoneGpsAvailable = false;
+        _workerReady = true;
+      });
     }
 
     const settings = LocationSettings(
-      accuracy: LocationAccuracy.high,
+      accuracy: LocationAccuracy.best,
       distanceFilter: 5,
     );
 
@@ -95,9 +110,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ).listen((Position position) {
       if (!mounted) return;
       setState(() {
-        _workerPosition = LatLng(position.latitude, position.longitude);
+        _phonePosition = LatLng(position.latitude, position.longitude);
+        _phoneGpsAvailable = true;
+        _workerReady = true;
       });
     });
+  }
+
+  void _showEnableGpsDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Aktifkan GPS'),
+        content: const Text(
+          'Fitur Worker membutuhkan GPS untuk melacak posisi Anda. '
+          'Silakan aktifkan GPS di pengaturan.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Nanti'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              Geolocator.openLocationSettings();
+            },
+            child: const Text('Buka Pengaturan'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -118,959 +164,357 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
-  void _syncConnectionState(
-    MonitoringProvider monProv,
-    AppStateProvider appState,
-    SettingsProvider settings,
-    DevicePairingProvider pairing,
-  ) {
-    _updateSessionPresence(monProv, pairing);
-
-    final sender = _resolveSenderConnection(
-      monProv,
-      seenThisSession: _senderSeenThisSession,
-    );
-    final receiver = _resolveReceiverConnection(
-      monProv,
-      pairing,
-      seenThisSession: _receiverSeenThisSession,
-    );
-    final receiverLastUpdate = _formatLinkLastUpdate(
-      _receiverTelemetry(monProv, pairing),
-      receiver,
-    );
-
-    final receiverDebugKey = '$receiver|$receiverLastUpdate';
-    if (receiverDebugKey != _lastReceiverDebugKey) {
-      _lastReceiverDebugKey = receiverDebugKey;
-      debugPrint('Receiver Status: ${receiver.label}');
-      debugPrint('Receiver Last Update: $receiverLastUpdate');
-    }
-
-    // Sync Application Status setelah frame — hindari notify di tengah build.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      appState.syncMonitoring(
-        monitoring: monProv.monitoring,
-        senderState: sender.label,
-        receiverState: receiver.label,
-      );
-    });
-
-    if (settings.notificationEnabled && AppStage.localNotificationEnabled) {
-      _DashboardConnectionNotifier.notify(
-        deviceName: 'Sender',
-        previous: _lastSenderConnection,
-        current: sender,
-      );
-      _DashboardConnectionNotifier.notify(
-        deviceName: 'Receiver',
-        previous: _lastReceiverConnection,
-        current: receiver,
-      );
-    }
-
-    _lastSenderConnection = sender;
-    _lastReceiverConnection = receiver;
+  /// Cek apakah Sender ONLINE berdasarkan linkStatus dari Firebase.
+  bool _isSenderOnline(MonitoringModel? monitoring) {
+    if (monitoring == null || !monitoring.hasData) return false;
+    final linkStatus = monitoring.linkStatus?.toUpperCase().trim();
+    return linkStatus == 'ONLINE';
   }
 
-  void _updateSessionPresence(
-    MonitoringProvider mon,
-    DevicePairingProvider pairing,
-  ) {
-    final sessionKey = '${pairing.senderId}|${pairing.receiverId}';
-    if (_pairedSessionKey != sessionKey) {
-      _pairedSessionKey = sessionKey;
-      _senderSeenThisSession = false;
-      _receiverSeenThisSession = false;
-    }
-
-    if (!mon.isInitialized || mon.isLoading) return;
-
-    final sender = mon.monitoring;
-    if (sender != null &&
-        sender.hasData &&
-        !OfflineDetector.isOffline(sender) &&
-        _hasSenderData(sender)) {
-      _senderSeenThisSession = true;
-    }
-
-    final receiver = _receiverTelemetry(mon, pairing);
-    if (receiver != null &&
-        receiver.hasData &&
-        !OfflineDetector.isOffline(receiver) &&
-        DeviceLinkStatusResolver.hasCoreTelemetry(receiver)) {
-      _receiverSeenThisSession = true;
-    }
+  /// Cek apakah Receiver ONLINE berdasarkan linkStatus dari Firebase.
+  bool _isReceiverOnline(MonitoringModel? receiverNode) {
+    if (receiverNode == null || !receiverNode.hasData) return false;
+    final linkStatus = receiverNode.linkStatus?.toUpperCase().trim();
+    return linkStatus == 'ONLINE';
   }
 
   @override
   Widget build(BuildContext context) {
-    return Consumer4<MonitoringProvider, AppStateProvider, SettingsProvider,
+    return Consumer3<MonitoringProvider, AppStateProvider,
         DevicePairingProvider>(
-      builder: (context, monProv, appState, settings, pairing, _) {
-        _syncConnectionState(monProv, appState, settings, pairing);
+      builder: (context, monProv, appState, pairing, child) {
+        final monitoring = monProv.monitoring;
+        final status = monProv.currentStatus;
+        final isOffline = status == SensorStatus.offline;
+        final isDanger = status == SensorStatus.danger;
+        final isNoise = status == SensorStatus.noise;
+        final isSafe =
+            status == SensorStatus.safe || status == SensorStatus.normal;
 
-        // State: Loading (saat pertama kali, belum ada data)
-        if (monProv.isLoading && monProv.monitoring == null) {
-          return _buildLoading(context);
+        // Sender: hanya tampil jika ONLINE (linkStatus == ONLINE)
+        LatLng? senderPosition;
+        if (_isSenderOnline(monitoring)) {
+          final lat = monitoring!.effectiveLatitude;
+          final lng = monitoring.effectiveLongitude;
+          if (lat != null && lng != null) {
+            senderPosition = LatLng(lat, lng);
+          }
         }
 
-        // State: Error (saat gagal, belum pernah dapat data)
-        if (monProv.errorMessage != null && monProv.monitoring == null) {
-          return _buildError(context, monProv.errorMessage!);
+        // Receiver: hanya tampil jika ONLINE (linkStatus == ONLINE)
+        LatLng? receiverPosition;
+        final receiverNode = pairing.receiverTelemetry;
+        if (_isReceiverOnline(receiverNode)) {
+          final lat = receiverNode!.effectiveLatitude;
+          final lng = receiverNode.effectiveLongitude;
+          if (lat != null && lng != null) {
+            receiverPosition = LatLng(lat, lng);
+          }
+        }
+        // Fallback ke nested receiver coords di sender (hanya jika receiver ONLINE)
+        if (receiverPosition == null && _isReceiverOnline(monitoring)) {
+          if (monitoring!.receiverLatitude != null &&
+              monitoring.receiverLongitude != null) {
+            receiverPosition = LatLng(
+              monitoring.receiverLatitude!,
+              monitoring.receiverLongitude!,
+            );
+          }
         }
 
-        final theme = Theme.of(context);
-        final subtitle = monProv.displaySubtitle;
+        // Worker: hanya tampil jika GPS phone benar-benar tersedia
+        // JANGAN gunakan Sender sebagai fallback Worker
+        final LatLng? workerPosition =
+            _phoneGpsAvailable ? _phonePosition : null;
 
-        return ListView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-          children: [
-            _StageBanner(stage: appState.stage),
-            const SizedBox(height: 16),
-            Text(
-              'Device Monitoring',
-              style: theme.textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0.2,
+        final today = DateTime.now();
+        final dateStr = DateFormat('EEEE, d MMMM yyyy', 'id_ID').format(today);
+
+        return RefreshIndicator(
+          onRefresh: () => monProv.refresh(),
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+            children: [
+              // ===== HEADER =====
+              _HeaderCard(
+                date: dateStr,
+                time: _currentTime,
+                status: status,
               ),
-            ),
-            if (subtitle.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Text(
-                subtitle,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.hintColor,
-                ),
+              const SizedBox(height: 12),
+
+              // ===== SYSTEM STATUS =====
+              _StatusCard(
+                backendLabel: appState.backendLabel,
+                firebaseLabel: appState.firebaseLabel,
+                senderLabel: appState.senderLabel,
+                receiverLabel: appState.receiverLabel,
+                pairingLabel: pairing.isPaired ? 'PAIRED' : 'NOT PAIRED',
+                lastUpdate: monitoring?.timestamp ?? 0,
               ),
+              const SizedBox(height: 12),
+
+              // ===== KONDISI =====
+              _KondisiCard(
+                status: status,
+                distance: monProv.displayDistance,
+                limitSwitch: monitoring?.limitSwitch,
+                isOffline: isOffline,
+                isDanger: isDanger,
+                isNoise: isNoise,
+                isSafe: isSafe,
+              ),
+              const SizedBox(height: 12),
+
+              // ===== MAP =====
+              _MapCard(
+                workerPosition: workerPosition,
+                senderPosition: senderPosition,
+                receiverPosition: receiverPosition,
+                status: status,
+                isDanger: isDanger,
+                isOffline: isOffline,
+                receiverIsOffline: receiverNode != null &&
+                    receiverNode.hasData &&
+                    !_isReceiverOnline(receiverNode),
+                workerReady: _workerReady,
+              ),
+              const SizedBox(height: 12),
+
+              // ===== DEVICE STATUS =====
+              _DeviceInfoCard(
+                senderBattery: monitoring?.battery,
+                senderSignal: monitoring?.signal,
+                senderLastSeen: monitoring?.timestamp ?? 0,
+                senderLinkStatus: monitoring?.linkStatus,
+                receiverBattery: receiverNode?.battery,
+                receiverSignal: receiverNode?.signal,
+                receiverLastSeen: receiverNode?.timestamp ?? 0,
+                receiverLinkStatus: receiverNode?.linkStatus,
+                senderId: pairing.senderId,
+                receiverId: pairing.receiverId,
+              ),
+              const SizedBox(height: 12),
+
+              // ===== STATISTICS =====
+              _QuickStatsCard(history: appState.history),
+              const SizedBox(height: 12),
+
+              // ===== ALARM HISTORY =====
+              _AlarmHistoryCard(history: appState.history),
             ],
-            const SizedBox(height: 16),
-            StatusCard(status: monProv.currentStatus),
-            const SizedBox(height: 16),
-            _DeviceMonitoringSection(
-              monitoringProvider: monProv,
-              pairing: pairing,
-              senderSeenThisSession: _senderSeenThisSession,
-              receiverSeenThisSession: _receiverSeenThisSession,
-            ),
-            const SizedBox(height: 16),
-            _DashboardMapCard(
-              monitoring: monProv.monitoring,
-              workerPosition: _workerPosition,
-              senderOnline: _resolveSenderConnection(
-                    monProv,
-                    seenThisSession: _senderSeenThisSession,
-                  ) ==
-                  DeviceLinkStatus.online,
-              receiverOnline: _resolveReceiverConnection(
-                    monProv,
-                    pairing,
-                    seenThisSession: _receiverSeenThisSession,
-                  ) ==
-                  DeviceLinkStatus.online,
-              receiverPosition: () {
-                final coords = _receiverCoordinates(
-                  monProv.monitoring,
-                  pairing.receiverTelemetry,
-                );
-                if (coords.lat == null || coords.lng == null) return null;
-                return LatLng(coords.lat!, coords.lng!);
-              }(),
-            ),
-            const SizedBox(height: 16),
-            _GpsDistanceCard(
-              monitoring: monProv.monitoring,
-              workerPosition: _workerPosition,
-            ),
-            const SizedBox(height: 16),
-            _SystemStatusCard(state: appState),
-            const SizedBox(height: 16),
-            _DistancePlaceholder(distance: monProv.displayDistance),
-          ],
+          ),
         );
       },
     );
   }
-
-  /// Tampilan loading.
-  Widget _buildLoading(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            Text(
-              'Menghubungkan ke Firebase...',
-              style: TextStyle(
-                fontSize: 14,
-                color: Theme.of(context).hintColor,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Tampilan error.
-  Widget _buildError(BuildContext context, String message) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Card(
-          elevation: 2,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
-          color: Theme.of(context).cardColor,
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.cloud_off, size: 56, color: AppColors.danger),
-                const SizedBox(height: 16),
-                const Text(
-                  'Gagal Terhubung',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  message,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: Theme.of(context).hintColor,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                FilledButton.icon(
-                  onPressed: () {
-                    context.read<MonitoringProvider>().refresh();
-                  },
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Coba Lagi'),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
 
-/// Peta ringkas Dashboard — Sender, Receiver, Worker.
-/// Marker Sender/Receiver hanya tampil jika status ONLINE (Device Pairing).
-class _DashboardMapCard extends StatefulWidget {
-  const _DashboardMapCard({
-    this.monitoring,
-    this.workerPosition,
-    this.senderOnline,
-    this.receiverOnline,
-    this.receiverPosition,
+// =====================================================================
+// HEADER
+// =====================================================================
+class _HeaderCard extends StatelessWidget {
+  final String date;
+  final String time;
+  final String status;
+
+  const _HeaderCard({
+    required this.date,
+    required this.time,
+    required this.status,
   });
 
-  final MonitoringModel? monitoring;
-  final LatLng? workerPosition;
-
-  /// Jika null, fallback ke deteksi telemetry existing.
-  final bool? senderOnline;
-  final bool? receiverOnline;
-
-  /// Koordinat Receiver dari Device Pairing (atau nested Sender).
-  final LatLng? receiverPosition;
-
-  @override
-  State<_DashboardMapCard> createState() => _DashboardMapCardState();
-}
-
-class _DashboardMapCardState extends State<_DashboardMapCard> {
-  static const LatLng _initialPosition = LatLng(-6.914744, 107.609810);
-  /// Zoom fokus 16–17 saat hanya marker User (Kondisi 1 & 5).
-  static const double _userZoom = 16.5;
-  /// Threshold perubahan koordinat signifikan (meter) sebelum kamera di-update.
-  static const double _significantMoveMeters = 25;
-
-  final MapController _mapController = MapController();
-  String? _lastPresenceKey;
-  String? _lastOnlineReportKey;
-  LatLng? _lastFitUser;
-  LatLng? _lastFitSender;
-  LatLng? _lastFitReceiver;
-  String _cameraMode = 'CENTER USER';
-
-  /// Sender online: data valid + heartbeat masih segar.
-  bool _isSenderOnline(MonitoringModel? monitoring) =>
-      _isSenderTelemetryOnline(monitoring);
-
-  /// Receiver ikut pulse telemetry Sender.
-  bool _isReceiverOnline(MonitoringModel? monitoring) =>
-      _isReceiverTelemetryOnline(monitoring);
-
-  String _formatLastUpdate(MonitoringModel? monitoring) {
-    if (monitoring == null || monitoring.timestamp <= 0) return '--';
-    return Formatters.dateTime(monitoring.timestamp);
-  }
-
-  void _logDeviceOnlineReport({
-    required MonitoringModel? monitoring,
-    required bool senderOnline,
-    required bool receiverOnline,
-  }) {
-    final senderLat = monitoring?.latitude;
-    final senderLng = monitoring?.longitude;
-    final receiverLat =
-        widget.receiverPosition?.latitude ?? monitoring?.receiverLatitude;
-    final receiverLng =
-        widget.receiverPosition?.longitude ?? monitoring?.receiverLongitude;
-    final senderStatus = monitoring?.status ?? SensorStatus.unknown;
-    final isStale = monitoring != null &&
-        monitoring.hasData &&
-        OfflineDetector.isOffline(monitoring);
-
-    debugPrint('Sender Status: $senderStatus');
-    debugPrint('Receiver Status: ${receiverOnline ? 'ONLINE' : 'OFFLINE'}');
-    debugPrint('Sender Last Update: ${_formatLastUpdate(monitoring)}');
-    debugPrint(
-      'Receiver Last Update: ${receiverOnline ? _formatLastUpdate(monitoring) : '--'}',
-    );
-    debugPrint('Sender Latitude: ${senderLat ?? 'null'}');
-    debugPrint('Sender Longitude: ${senderLng ?? 'null'}');
-    debugPrint('Receiver Latitude: ${receiverLat ?? 'null'}');
-    debugPrint('Receiver Longitude: ${receiverLng ?? 'null'}');
-
-    debugPrint('DEVICE ONLINE REPORT');
-    debugPrint('Sender');
-    debugPrint('Online: ${senderOnline ? 'YES' : 'NO'}');
-    if (senderOnline) {
-      debugPrint('Reason: telemetry fresh + coordinates available');
-    } else if (monitoring == null || !monitoring.hasData) {
-      debugPrint('Reason: no monitoring data from Firebase');
-    } else if (senderLat == null || senderLng == null) {
-      debugPrint('Reason: coordinates not available');
-    } else if (isStale) {
-      debugPrint(
-        'Reason: last update older than '
-        '${AppConstants.senderOfflineThresholdSec}s (stale last known location)',
-      );
-    } else {
-      debugPrint('Reason: device not active');
-    }
-
-    debugPrint('Receiver');
-    debugPrint('Online: ${receiverOnline ? 'YES' : 'NO'}');
-    if (receiverOnline) {
-      debugPrint('Reason: receiver ONLINE (Device Link status)');
-    } else if (receiverLat == null || receiverLng == null) {
-      debugPrint('Reason: receiver coordinates not available');
-    } else if (!_isSenderOnline(monitoring)) {
-      debugPrint(
-        'Reason: sender offline — receiver coords kept as history only',
-      );
-    } else {
-      debugPrint('Reason: receiver not active');
-    }
-  }
-
-  ({LatLng? sender, LatLng? receiver}) _resolveActiveMarkers(
-    MonitoringModel? monitoring,
-  ) {
-    final senderOnline =
-        widget.senderOnline ?? _isSenderOnline(monitoring);
-    final receiverOnline =
-        widget.receiverOnline ?? _isReceiverOnline(monitoring);
-
-    final onlineReportKey = '$senderOnline|$receiverOnline';
-    if (onlineReportKey != _lastOnlineReportKey) {
-      _lastOnlineReportKey = onlineReportKey;
-      _logDeviceOnlineReport(
-        monitoring: monitoring,
-        senderOnline: senderOnline,
-        receiverOnline: receiverOnline,
-      );
-    }
-
-    // Marker Sender / Receiver hanya jika status ONLINE.
-    final LatLng? sender = senderOnline &&
-            monitoring?.latitude != null &&
-            monitoring?.longitude != null
-        ? LatLng(monitoring!.latitude!, monitoring.longitude!)
-        : null;
-
-    LatLng? receiver;
-    if (receiverOnline) {
-      receiver = widget.receiverPosition;
-      if (receiver == null &&
-          monitoring?.receiverLatitude != null &&
-          monitoring?.receiverLongitude != null) {
-        receiver = LatLng(
-          monitoring!.receiverLatitude!,
-          monitoring.receiverLongitude!,
-        );
-      }
-    }
-
-    return (sender: sender, receiver: receiver);
-  }
-
-  @override
-  void dispose() {
-    _mapController.dispose();
-    super.dispose();
-  }
-
-  Color _colorForStatus(String status) {
-    switch (status) {
-      case SensorStatus.normal:
-        return Colors.green;
-      case SensorStatus.noise:
-        return Colors.yellow.shade700;
-      case SensorStatus.danger:
-        return Colors.red;
-      case SensorStatus.offline:
-        return Colors.lightBlue;
-      case SensorStatus.unknown:
-      default:
-        return Colors.purple;
-    }
-  }
-
-  bool _movedSignificantly(LatLng? previous, LatLng? next) {
-    if (previous == null && next == null) return false;
-    if (previous == null || next == null) return true;
-    return Geolocator.distanceBetween(
-          previous.latitude,
-          previous.longitude,
-          next.latitude,
-          next.longitude,
-        ) >=
-        _significantMoveMeters;
-  }
-
-  String _resolveCameraMode({
-    required LatLng? user,
-    required LatLng? sender,
-    required LatLng? receiver,
-  }) {
-    final hasUser = user != null;
-    final hasSender = sender != null;
-    final hasReceiver = receiver != null;
-
-    if (hasUser && hasSender && hasReceiver) return 'FIT ALL';
-    if (hasUser && hasSender) return 'FIT USER+SENDER';
-    if (hasUser) return 'CENTER USER';
-    if (hasSender && hasReceiver) return 'FIT SENDER+RECEIVER';
-    return 'CENTER USER';
-  }
-
-  void _logCameraReport({
-    required LatLng? user,
-    required LatLng? sender,
-    required LatLng? receiver,
-    required String mode,
-  }) {
-    debugPrint('CAMERA BEHAVIOR REPORT');
-    debugPrint('User Marker: ${user != null ? 'AVAILABLE' : 'NULL'}');
-    debugPrint('Sender Marker: ${sender != null ? 'AVAILABLE' : 'NULL'}');
-    debugPrint('Receiver Marker: ${receiver != null ? 'AVAILABLE' : 'NULL'}');
-    debugPrint('Current Camera Mode: $mode');
-  }
-
-  /// Update kamera hanya saat marker muncul/hilang atau koordinat berubah signifikan.
-  void _maybeUpdateCamera({
-    required LatLng? user,
-    required LatLng? sender,
-    required LatLng? receiver,
-  }) {
-    final fitPoints = <LatLng>[
-      if (user != null) user,
-      if (sender != null) sender,
-      if (receiver != null) receiver,
-    ];
-    if (!mounted || fitPoints.isEmpty) return;
-
-    final presenceKey =
-        '${user != null}|${sender != null}|${receiver != null}';
-    final presenceChanged = presenceKey != _lastPresenceKey;
-    final coordsChanged = _movedSignificantly(_lastFitUser, user) ||
-        _movedSignificantly(_lastFitSender, sender) ||
-        _movedSignificantly(_lastFitReceiver, receiver);
-
-    if (!presenceChanged && !coordsChanged && _lastPresenceKey != null) {
-      return;
-    }
-
-    _lastPresenceKey = presenceKey;
-    _lastFitUser = user;
-    _lastFitSender = sender;
-    _lastFitReceiver = receiver;
-    _cameraMode = _resolveCameraMode(
-      user: user,
-      sender: sender,
-      receiver: receiver,
-    );
-    _logCameraReport(
-      user: user,
-      sender: sender,
-      receiver: receiver,
-      mode: _cameraMode,
-    );
-
-    final padding = fitPoints.length >= 3
-        ? const EdgeInsets.all(56)
-        : const EdgeInsets.all(40);
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      if (fitPoints.length == 1) {
-        _mapController.move(fitPoints.first, _userZoom);
-        return;
-      }
-      _mapController.fitCamera(
-        CameraFit.coordinates(
-          coordinates: fitPoints,
-          padding: padding,
-        ),
-      );
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
-    final monitoring = widget.monitoring;
-    final status = monitoring?.status ?? SensorStatus.unknown;
-    final user = widget.workerPosition;
+    final isDanger = status == SensorStatus.danger;
+    final isOffline = status == SensorStatus.offline;
 
-    final active = _resolveActiveMarkers(monitoring);
-    final sender = active.sender;
-    final receiver = active.receiver;
+    Color headerColor = AppColors.primary;
+    if (isDanger) headerColor = AppColors.danger;
+    if (isOffline) headerColor = AppColors.offline;
 
-    // Fokus awal: lokasi pengguna. Fallback ke Bandung jika GPS belum siap.
-    final center = user ?? _initialPosition;
-
-    final markers = <Marker>[];
-
-    if (user != null) {
-      markers.add(
-        Marker(
-          point: user,
-          width: 40,
-          height: 40,
-          alignment: Alignment.topCenter,
-          child: const Tooltip(
-            message: 'User',
-            child: Icon(
-              Icons.person_pin_circle,
-              color: Colors.orange,
-              size: 40,
-            ),
-          ),
-        ),
-      );
-    }
-
-    if (sender != null) {
-      markers.add(
-        Marker(
-          point: sender,
-          width: 40,
-          height: 40,
-          alignment: Alignment.topCenter,
-          child: Tooltip(
-            message: 'TrackSafe Sender\nStatus: $status',
-            child: Icon(
-              Icons.train,
-              color: _colorForStatus(status),
-              size: 40,
-            ),
-          ),
-        ),
-      );
-    }
-
-    if (receiver != null) {
-      markers.add(
-        Marker(
-          point: receiver,
-          width: 40,
-          height: 40,
-          alignment: Alignment.topCenter,
-          child: const Tooltip(
-            message: 'Receiver',
-            child: Icon(
-              Icons.radio,
-              color: Colors.blue,
-              size: 40,
-            ),
-          ),
-        ),
-      );
-    }
-
-    _maybeUpdateCamera(
-      user: user,
-      sender: sender,
-      receiver: receiver,
-    );
-
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return Card(
-      elevation: 2,
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: SizedBox(
-        height: 280,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.map_outlined,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Peta Monitoring',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                          color: isDark ? Colors.white : AppColors.textPrimary,
-                        ),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: FlutterMap(
-                mapController: _mapController,
-                options: MapOptions(
-                  initialCenter: center,
-                  initialZoom: _userZoom,
-                ),
-                children: [
-                  TileLayer(
-                    urlTemplate:
-                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                    userAgentPackageName: 'com.tracksafe.tracksafe_app',
-                  ),
-                  if (markers.isNotEmpty) MarkerLayer(markers: markers),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Kartu jarak GPS — Worker→Sender dan Sender→Receiver.
-class _GpsDistanceCard extends StatelessWidget {
-  const _GpsDistanceCard({
-    required this.monitoring,
-    required this.workerPosition,
-  });
-
-  final MonitoringModel? monitoring;
-  final LatLng? workerPosition;
-
-  static String _formatMeters(double? meters) {
-    if (meters == null) return '--';
-    if (meters < 1000) {
-      return '${meters.round()} m';
-    }
-    return '${(meters / 1000).toStringAsFixed(1)} km';
-  }
-
-  String _workerToSenderLabel() {
-    if (!_isSenderTelemetryOnline(monitoring)) {
-      if (!_hasSenderData(monitoring)) {
-        return 'WAITING';
-      }
-      return 'Sender OFF';
-    }
-
-    final worker = workerPosition;
-    final senderLat = monitoring!.latitude!;
-    final senderLng = monitoring!.longitude!;
-    if (worker == null) return '--';
-
-    return _formatMeters(
-      Geolocator.distanceBetween(
-        worker.latitude,
-        worker.longitude,
-        senderLat,
-        senderLng,
-      ),
-    );
-  }
-
-  String _senderToReceiverLabel() {
-    if (!_isReceiverTelemetryOnline(monitoring)) {
-      if (!_hasReceiverData(monitoring)) {
-        return 'WAITING';
-      }
-      return 'Receiver OFF';
-    }
-
-    return _formatMeters(
-      Geolocator.distanceBetween(
-        monitoring!.latitude!,
-        monitoring!.longitude!,
-        monitoring!.receiverLatitude!,
-        monitoring!.receiverLongitude!,
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final senderOnline = _isSenderTelemetryOnline(monitoring);
-    final receiverOnline = _isReceiverTelemetryOnline(monitoring);
-    final workerSenderValid = senderOnline && workerPosition != null;
-    final senderReceiverValid = receiverOnline;
-
-    _logDistanceValidationReport(
-      monitoring: monitoring,
-      senderOnline: senderOnline,
-      receiverOnline: receiverOnline,
-      workerSenderValid: workerSenderValid,
-      senderReceiverValid: senderReceiverValid,
-    );
-
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.straighten, color: theme.colorScheme.primary),
-                const SizedBox(width: 10),
-                Text(
-                  'Monitoring Distance',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            _distanceRow(
-              context,
-              icon: Icons.person_pin_circle,
-              iconColor: Colors.orange,
-              label: 'Worker → Sender',
-              value: _workerToSenderLabel(),
-            ),
-            const SizedBox(height: 12),
-            _distanceRow(
-              context,
-              icon: Icons.radio,
-              iconColor: Colors.blue,
-              label: 'Sender → Receiver',
-              value: _senderToReceiverLabel(),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _distanceRow(
-    BuildContext context, {
-    required IconData icon,
-    required Color iconColor,
-    required String label,
-    required String value,
-  }) {
-    final theme = Theme.of(context);
-    final isOff = value.contains('OFF') || value == 'WAITING';
-
-    return Row(
-      children: [
-        Icon(icon, color: iconColor, size: 22),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            label,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: AppColors.textSecondary,
-            ),
-          ),
-        ),
-        Text(
-          value,
-          style: theme.textTheme.titleMedium?.copyWith(
-            fontWeight: FontWeight.w800,
-            color: isOff ? AppColors.offline : null,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _StageBanner extends StatelessWidget {
-  const _StageBanner({required this.stage});
-
-  final int stage;
-
-  @override
-  Widget build(BuildContext context) {
     return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: AppColors.primary.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.2)),
-      ),
-      child: Text(
-        'TAHAP $stage / 11 · Flutter UI  ·  '
-        '${AppStage.firebaseEnabled ? 'Firebase ON' : 'Firebase OFF'}  ·  '
-        '${AppStage.backendEnabled ? 'Backend ON' : 'Backend OFF'}  ·  '
-        '${AppStage.localNotificationEnabled ? 'Notif ON' : 'Notif OFF'}',
-        style: const TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-          color: AppColors.primary,
+        gradient: LinearGradient(
+          colors: [headerColor, headerColor.withValues(alpha: 0.8)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: headerColor.withValues(alpha: 0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
-    );
-  }
-}
-
-class _SystemStatusCard extends StatelessWidget {
-  const _SystemStatusCard({required this.state});
-
-  final AppStateProvider state;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.dns_outlined, color: theme.colorScheme.primary),
-                const SizedBox(width: 10),
-                Text(
-                  'Application Status',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            _statusRow(
-              context,
-              icon: Icons.cloud_outlined,
-              label: 'Backend',
-              value: state.backendLabel,
-            ),
-            _statusRow(
-              context,
-              icon: Icons.storage_outlined,
-              label: 'Firebase',
-              value: state.firebaseLabel,
-            ),
-            _statusRow(
-              context,
-              icon: Icons.train,
-              label: 'Sender',
-              value: state.senderLabel,
-            ),
-            _statusRow(
-              context,
-              icon: Icons.sensors,
-              label: 'Receiver',
-              value: state.receiverLabel,
-            ),
-            _statusRow(
-              context,
-              icon: Icons.schedule,
-              label: 'Last Update',
-              value: state.lastUpdateLabel,
-            ),
-            _statusRow(
-              context,
-              icon: Icons.battery_std,
-              label: 'Battery',
-              value: state.batteryLabel,
-            ),
-            _statusRow(
-              context,
-              icon: Icons.signal_cellular_alt,
-              label: 'Signal',
-              value: state.signalLabel,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _statusRow(
-    BuildContext context, {
-    required IconData icon,
-    required String label,
-    required String value,
-  }) {
-    final color = _indicatorColor(label, value);
-    final theme = Theme.of(context);
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
         children: [
-          Icon(icon, size: 20, color: color),
-          const SizedBox(width: 10),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.shield, color: Colors.white, size: 28),
+          ),
+          const SizedBox(width: 14),
           Expanded(
-            child: Text(
-              label,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: AppColors.textSecondary,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'TrackSafe',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  date,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.85),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                time,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
               ),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// =====================================================================
+// SYSTEM STATUS
+// =====================================================================
+class _StatusCard extends StatelessWidget {
+  final String backendLabel;
+  final String firebaseLabel;
+  final String senderLabel;
+  final String receiverLabel;
+  final String pairingLabel;
+  final int lastUpdate;
+
+  const _StatusCard({
+    required this.backendLabel,
+    required this.firebaseLabel,
+    required this.senderLabel,
+    required this.receiverLabel,
+    required this.pairingLabel,
+    required this.lastUpdate,
+  });
+
+  Color _statusColor(String label) {
+    final v = label.toUpperCase().trim();
+    if (v == 'ONLINE' || v == 'CONNECTED' || v == 'PAIRED') return Colors.green;
+    if (v == 'OFFLINE' || v == 'NOT PAIRED' || v == 'OFF') return Colors.red;
+    if (v == 'CHECKING' || v == 'WAITING' || v == 'CONNECTING') {
+      return Colors.orange;
+    }
+    return Colors.grey;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final lastUpdateStr = lastUpdate > 0
+        ? Formatters.dateTime(lastUpdate)
+        : SystemLabels.placeholder;
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.monitor_heart,
+                    size: 18, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Text(
+                  'SYSTEM STATUS',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            _statusItem('Backend', backendLabel),
+            _statusItem('Firebase', firebaseLabel),
+            _statusItem('Sender', senderLabel),
+            _statusItem('Receiver', receiverLabel),
+            _statusItem('Pairing', pairingLabel),
+            _statusItem('Last Update', lastUpdateStr),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statusItem(String label, String value) {
+    final color = _statusColor(value);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
           Container(
             width: 10,
             height: 10,
-            margin: const EdgeInsets.only(right: 8),
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style:
+                  const TextStyle(fontSize: 12, color: AppColors.textSecondary),
             ),
           ),
+          const SizedBox(width: 8),
           Flexible(
             child: Text(
               value,
-              textAlign: TextAlign.end,
-              style: theme.textTheme.bodyMedium?.copyWith(
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
                 fontWeight: FontWeight.w700,
                 color: color,
               ),
@@ -1080,100 +524,476 @@ class _SystemStatusCard extends StatelessWidget {
       ),
     );
   }
-
-  Color _indicatorColor(String label, String value) {
-    final v = value.toUpperCase().trim();
-
-    if (v == 'ONLINE' ||
-        v == SystemLabels.backendOnline.toUpperCase() ||
-        v == SystemLabels.firebaseConnected.toUpperCase() ||
-        value == SystemLabels.modeProduction) {
-      return AppColors.online;
-    }
-
-    if (v == 'OFF' ||
-        v == SystemLabels.backendOffline.toUpperCase() ||
-        v == SystemLabels.firebaseNotConnected.toUpperCase()) {
-      return AppColors.offline;
-    }
-
-    if (v == 'ERROR' || v == SystemLabels.backendError.toUpperCase()) {
-      return AppColors.danger;
-    }
-
-    if (v == 'CONNECTING' ||
-        v == 'CHECKING' ||
-        v == SystemLabels.backendChecking.toUpperCase()) {
-      return AppColors.warning;
-    }
-
-    if (v == 'WAITING' ||
-        value == SystemLabels.placeholder ||
-        value == SystemLabels.lastUpdateNone) {
-      return AppColors.neutral;
-    }
-
-    if (label == 'Battery' || label == 'Signal') {
-      if (value == SystemLabels.placeholder) return AppColors.neutral;
-      return AppColors.online;
-    }
-
-    if (label == 'Last Update') {
-      return value == SystemLabels.lastUpdateNone
-          ? AppColors.neutral
-          : AppColors.online;
-    }
-
-    if (label == 'Application Mode') return AppColors.primary;
-    return AppColors.neutral;
-  }
 }
 
-class _DistancePlaceholder extends StatelessWidget {
-  const _DistancePlaceholder({this.distance});
-
+// =====================================================================
+// KONDISI
+// =====================================================================
+class _KondisiCard extends StatelessWidget {
+  final String status;
   final int? distance;
+  final String? limitSwitch;
+  final bool isOffline;
+  final bool isDanger;
+  final bool isNoise;
+  final bool isSafe;
+
+  const _KondisiCard({
+    required this.status,
+    required this.distance,
+    this.limitSwitch,
+    required this.isOffline,
+    required this.isDanger,
+    required this.isNoise,
+    required this.isSafe,
+  });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final displayText =
-        distance == null ? SystemLabels.placeholder : '$distance cm';
+
+    Color statusColor = AppColors.normal;
+    String statusText = 'SAFE';
+    IconData statusIcon = Icons.check_circle;
+
+    if (isDanger) {
+      statusColor = AppColors.danger;
+      statusText = 'DANGER';
+      statusIcon = Icons.emergency;
+    } else if (isNoise) {
+      statusColor = AppColors.noise;
+      statusText = 'NOISE';
+      statusIcon = Icons.warning_amber_rounded;
+    } else if (isOffline) {
+      statusColor = AppColors.offline;
+      statusText = 'OFFLINE';
+      statusIcon = Icons.cloud_off;
+    } else if (isSafe) {
+      statusColor = AppColors.normal;
+      statusText = 'SAFE';
+      statusIcon = Icons.check_circle;
+    }
 
     return Card(
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Row(
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: statusColor.withValues(alpha: 0.5),
+            width: 2,
+          ),
+        ),
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.primary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: const Icon(Icons.straighten, color: AppColors.primary),
+            Row(
+              children: [
+                Icon(Icons.info_outline,
+                    size: 18, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Text(
+                  'KONDISI',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Jarak Sensor',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: AppColors.textSecondary,
+            const SizedBox(height: 12),
+            // Status badge
+            Center(
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: statusColor.withValues(alpha: 0.4)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(statusIcon, color: statusColor, size: 24),
+                    const SizedBox(width: 10),
+                    Text(
+                      statusText,
+                      style: TextStyle(
+                        color: statusColor,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 1,
+                      ),
                     ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            // Detail
+            Row(
+              children: [
+                _detailItem(
+                    'Distance', distance != null ? '$distance cm' : '--'),
+                const SizedBox(width: 16),
+                _detailItem('Limit Switch', _limitSwitchLabel()),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _limitSwitchLabel() {
+    if (limitSwitch == null) return '--';
+    final v = limitSwitch!.toUpperCase().trim();
+    if (v == 'HIGH') return 'HIGH';
+    if (v == 'LOW') return 'LOW';
+    return limitSwitch!;
+  }
+
+  Widget _detailItem(String label, String value) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style:
+                const TextStyle(fontSize: 10, color: AppColors.textSecondary),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// =====================================================================
+// OFFLINE DETECTOR
+// =====================================================================
+class OfflineDetector {
+  static const int _offlineThresholdSec = 15;
+
+  static bool isOffline(MonitoringModel model) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final last = model.effectiveTimeMs;
+    if (last <= 0) return true;
+    return (now - last) > (_offlineThresholdSec * 1000);
+  }
+}
+
+// =====================================================================
+// MAP
+// =====================================================================
+class _MapCard extends StatefulWidget {
+  final LatLng? workerPosition;
+  final LatLng? senderPosition;
+  final LatLng? receiverPosition;
+  final String status;
+  final bool isDanger;
+  final bool isOffline;
+  final bool receiverIsOffline;
+  final bool workerReady;
+
+  const _MapCard({
+    required this.workerPosition,
+    required this.senderPosition,
+    required this.receiverPosition,
+    required this.status,
+    required this.isDanger,
+    required this.isOffline,
+    this.receiverIsOffline = false,
+    this.workerReady = false,
+  });
+
+  @override
+  State<_MapCard> createState() => _MapCardState();
+}
+
+class _MapCardState extends State<_MapCard>
+    with SingleTickerProviderStateMixin {
+  final MapController _mapController = MapController();
+  static const LatLng _defaultPosition = LatLng(-6.914744, 107.609810);
+  static const double _defaultZoom = 15.0;
+  bool _hasAutoFocused = false;
+  late AnimationController _blinkController;
+
+  @override
+  void initState() {
+    super.initState();
+    _blinkController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _blinkController.dispose();
+    _mapController.dispose();
+    super.dispose();
+  }
+
+  /// Auto-focus dengan prioritas: Worker → Sender → Receiver → Default
+  /// Hanya fokus jika marker tujuan benar-benar tersedia.
+  void _tryAutoFocus() {
+    if (_hasAutoFocused) return;
+
+    // Cari titik dengan prioritas — hanya jika benar-benar tersedia
+    LatLng? target;
+    if (widget.workerPosition != null) {
+      target = widget.workerPosition;
+    } else if (widget.senderPosition != null) {
+      target = widget.senderPosition;
+    } else if (widget.receiverPosition != null) {
+      target = widget.receiverPosition;
+    }
+
+    if (target == null) return;
+
+    _hasAutoFocused = true;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _mapController.move(target!, _defaultZoom);
+    });
+  }
+
+  void _focusMarkers() {
+    final points = <LatLng>[
+      if (widget.workerPosition != null) widget.workerPosition!,
+      if (widget.senderPosition != null) widget.senderPosition!,
+      if (widget.receiverPosition != null) widget.receiverPosition!,
+    ];
+    if (points.isEmpty) return;
+
+    if (points.length == 1) {
+      _mapController.move(points.first, _defaultZoom);
+    } else {
+      _mapController.fitCamera(
+        CameraFit.coordinates(
+          coordinates: points,
+          padding: const EdgeInsets.all(60),
+        ),
+      );
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _MapCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Trigger auto-focus when any position becomes available
+    if (!_hasAutoFocused) {
+      final hadAnyBefore = oldWidget.workerPosition != null ||
+          oldWidget.senderPosition != null ||
+          oldWidget.receiverPosition != null;
+      final hasAnyNow = widget.workerPosition != null ||
+          widget.senderPosition != null ||
+          widget.receiverPosition != null;
+      if (!hadAnyBefore && hasAnyNow) {
+        _tryAutoFocus();
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    _tryAutoFocus();
+
+    final markers = <Marker>[];
+
+    // ===== WORKER MARKER — Biru, Icon Person =====
+    // Hanya tampil jika GPS phone tersedia
+    if (widget.workerPosition != null) {
+      markers.add(
+        Marker(
+          point: widget.workerPosition!,
+          width: 40,
+          height: 40,
+          alignment: Alignment.center,
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.blue.withValues(alpha: 0.2),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.person_pin_circle,
+                color: Colors.blue, size: 40),
+          ),
+        ),
+      );
+    }
+
+    // ===== SENDER MARKER — Merah, Icon Train (blink if DANGER) =====
+    // Hanya tampil jika Sender ONLINE (linkStatus == ONLINE)
+    if (widget.senderPosition != null) {
+      final senderColor = widget.isDanger
+          ? Colors.red
+          : widget.isOffline
+              ? Colors.grey
+              : Colors.red;
+      markers.add(
+        Marker(
+          point: widget.senderPosition!,
+          width: 44,
+          height: 44,
+          alignment: Alignment.center,
+          child: widget.isDanger
+              ? AnimatedBuilder(
+                  animation: _blinkController,
+                  builder: (context, child) {
+                    return Opacity(
+                      opacity: 0.3 + (_blinkController.value * 0.7),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.red.withValues(alpha: 0.2),
+                          shape: BoxShape.circle,
+                        ),
+                        child: child,
+                      ),
+                    );
+                  },
+                  child: const Icon(Icons.train, color: Colors.red, size: 40),
+                )
+              : Container(
+                  decoration: BoxDecoration(
+                    color: senderColor.withValues(alpha: 0.2),
+                    shape: BoxShape.circle,
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    displayText,
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
+                  child: Icon(Icons.train, color: senderColor, size: 40),
+                ),
+        ),
+      );
+    }
+
+    // ===== RECEIVER MARKER — Hijau, Icon Radio (grey if offline) =====
+    // Hanya tampil jika Receiver ONLINE (linkStatus == ONLINE)
+    if (widget.receiverPosition != null) {
+      final receiverColor =
+          widget.receiverIsOffline ? Colors.grey : Colors.green;
+      markers.add(
+        Marker(
+          point: widget.receiverPosition!,
+          width: 40,
+          height: 40,
+          alignment: Alignment.center,
+          child: Container(
+            decoration: BoxDecoration(
+              color: receiverColor.withValues(alpha: 0.2),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(Icons.radio, color: receiverColor, size: 36),
+          ),
+        ),
+      );
+    }
+
+    // Polyline: Worker → Sender
+    final polylines = <Polyline>[];
+    if (widget.workerPosition != null && widget.senderPosition != null) {
+      polylines.add(
+        Polyline(
+          points: [widget.workerPosition!, widget.senderPosition!],
+          strokeWidth: 3,
+          color: Colors.orange.withValues(alpha: 0.7),
+        ),
+      );
+    }
+
+    // Polyline: Sender → Receiver
+    if (widget.senderPosition != null && widget.receiverPosition != null) {
+      polylines.add(
+        Polyline(
+          points: [widget.senderPosition!, widget.receiverPosition!],
+          strokeWidth: 3,
+          color: Colors.blue.withValues(alpha: 0.7),
+        ),
+      );
+    }
+
+    // Priority untuk initialCenter: Worker → Sender → Receiver → Default
+    final center = widget.workerPosition ??
+        widget.senderPosition ??
+        widget.receiverPosition ??
+        _defaultPosition;
+
+    return Card(
+      elevation: 2,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: SizedBox(
+        height: 300,
+        child: Stack(
+          children: [
+            FlutterMap(
+              mapController: _mapController,
+              options: MapOptions(
+                initialCenter: center,
+                initialZoom: _defaultZoom,
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName: 'com.tracksafe.tracksafe_app',
+                ),
+                if (polylines.isNotEmpty) PolylineLayer(polylines: polylines),
+                if (markers.isNotEmpty) MarkerLayer(markers: markers),
+              ],
+            ),
+            // Map title + legend
+            Positioned(
+              top: 8,
+              left: 8,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'MAP',
+                      style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.5),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 2),
+                    Text(
+                      '📍 Worker  🚂 Sender  📡 Receiver',
+                      style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.8),
+                          fontSize: 9),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            // Focus button
+            Positioned(
+              bottom: 12,
+              right: 12,
+              child: FloatingActionButton.small(
+                heroTag: 'focus_map',
+                onPressed: _focusMarkers,
+                backgroundColor: Colors.white,
+                child: const Icon(Icons.my_location, color: Colors.blue),
               ),
             ),
           ],
@@ -1183,316 +1003,448 @@ class _DistancePlaceholder extends StatelessWidget {
   }
 }
 
-String? _lastDistanceValidationKey;
+// =====================================================================
+// DEVICE STATUS — Realtime dari Firebase Stream
+// =====================================================================
+class _DeviceInfoCard extends StatelessWidget {
+  final int? senderBattery;
+  final int? senderSignal;
+  final int senderLastSeen;
+  final String? senderLinkStatus;
+  final int? receiverBattery;
+  final int? receiverSignal;
+  final int receiverLastSeen;
+  final String? receiverLinkStatus;
+  final String? senderId;
+  final String? receiverId;
 
-MonitoringModel? _receiverTelemetry(
-  MonitoringProvider mon,
-  DevicePairingProvider pairing,
-) {
-  final fromPair = pairing.receiverTelemetry;
-  if (fromPair != null && fromPair.hasData) return fromPair;
-  return null;
-}
-
-/// Koordinat Receiver: node pairing, fallback nested di Sender (sprint lama).
-({double? lat, double? lng}) _receiverCoordinates(
-  MonitoringModel? nested,
-  MonitoringModel? receiverNode,
-) {
-  if (receiverNode != null &&
-      receiverNode.latitude != null &&
-      receiverNode.longitude != null) {
-    return (lat: receiverNode.latitude, lng: receiverNode.longitude);
-  }
-  if (nested != null &&
-      nested.receiverLatitude != null &&
-      nested.receiverLongitude != null) {
-    return (lat: nested.receiverLatitude, lng: nested.receiverLongitude);
-  }
-  return (lat: null, lng: null);
-}
-
-bool _hasSenderData(MonitoringModel? monitoring) {
-  return monitoring != null &&
-      monitoring.hasData &&
-      monitoring.latitude != null &&
-      monitoring.longitude != null;
-}
-
-bool _hasReceiverData(MonitoringModel? monitoring) {
-  return monitoring != null &&
-      monitoring.hasData &&
-      monitoring.receiverLatitude != null &&
-      monitoring.receiverLongitude != null;
-}
-
-/// Perangkat online: koordinat tersedia + telemetry masih segar.
-bool _isSenderTelemetryOnline(MonitoringModel? monitoring) {
-  if (!_hasSenderData(monitoring)) return false;
-  return !OfflineDetector.isOffline(monitoring!);
-}
-
-/// Receiver ikut pulse telemetry Sender (tidak ada heartbeat terpisah).
-bool _isReceiverTelemetryOnline(MonitoringModel? monitoring) {
-  if (!_isSenderTelemetryOnline(monitoring)) return false;
-  return _hasReceiverData(monitoring);
-}
-
-DeviceLinkStatus _resolveSenderConnection(
-  MonitoringProvider mon, {
-  required bool seenThisSession,
-}) {
-  final m = mon.monitoring;
-  final gps = DeviceLinkStatusResolver.gpsFixFromCoords(
-    m?.latitude,
-    m?.longitude,
-  );
-  return DeviceLinkStatusResolver.resolve(
-    isLoading: !mon.isInitialized || mon.isLoading,
-    seenThisSession: seenThisSession,
-    telemetry: m,
-    hasGpsFix: gps,
-  );
-}
-
-DeviceLinkStatus _resolveReceiverConnection(
-  MonitoringProvider mon,
-  DevicePairingProvider pairing, {
-  required bool seenThisSession,
-}) {
-  final nested = mon.monitoring;
-  final receiverNode = pairing.receiverTelemetry;
-
-  // GPS Fix: dari node Receiver atau nested receiver coords di Sender.
-  final gpsFromNode = DeviceLinkStatusResolver.gpsFixFromCoords(
-    receiverNode?.latitude,
-    receiverNode?.longitude,
-  );
-  final gpsFromNested = _hasReceiverData(nested);
-  final hasGps = gpsFromNode || gpsFromNested;
-
-  // Battery / Signal / Status HARUS dari node Receiver IoT — bukan Sender.
-  MonitoringModel? telemetry;
-  if (receiverNode != null && receiverNode.hasData) {
-    telemetry = receiverNode;
-  }
-
-  return DeviceLinkStatusResolver.resolve(
-    isLoading: !mon.isInitialized || mon.isLoading,
-    seenThisSession: seenThisSession,
-    telemetry: telemetry,
-    hasGpsFix: hasGps,
-  );
-}
-
-String _formatLinkLastUpdate(
-  MonitoringModel? monitoring,
-  DeviceLinkStatus state,
-) {
-  if (state == DeviceLinkStatus.waiting ||
-      state == DeviceLinkStatus.connecting) {
-    return DeviceLinkStatusResolver.noDataLabel;
-  }
-  if (monitoring == null || monitoring.timestamp <= 0) {
-    return DeviceLinkStatusResolver.noDataLabel;
-  }
-  return Formatters.time(monitoring.timestamp);
-}
-
-String _iotMetricLabel(int? value, {required bool asBattery}) {
-  if (value == null) return DeviceLinkStatusResolver.noDataLabel;
-  return asBattery ? Formatters.battery(value) : Formatters.signal(value);
-}
-
-String _gpsFixLabel(bool hasFix, DeviceLinkStatus status) {
-  if (status == DeviceLinkStatus.waiting ||
-      status == DeviceLinkStatus.connecting) {
-    return DeviceLinkStatusResolver.noDataLabel;
-  }
-  if (!hasFix) return 'No Data';
-  return 'Fixed';
-}
-
-void _logDistanceValidationReport({
-  required MonitoringModel? monitoring,
-  required bool senderOnline,
-  required bool receiverOnline,
-  required bool workerSenderValid,
-  required bool senderReceiverValid,
-}) {
-  final key =
-      '$senderOnline|$receiverOnline|$workerSenderValid|$senderReceiverValid';
-  if (key == _lastDistanceValidationKey) return;
-  _lastDistanceValidationKey = key;
-
-  final senderStatus = senderOnline
-      ? 'ONLINE'
-      : (_hasSenderData(monitoring) ? 'OFF' : 'WAITING');
-  final receiverStatus = receiverOnline
-      ? 'ONLINE'
-      : (_hasReceiverData(monitoring) ? 'OFF' : 'WAITING');
-
-  debugPrint('DISTANCE VALIDATION REPORT');
-  debugPrint('Sender Status: $senderStatus');
-  debugPrint('Receiver Status: $receiverStatus');
-  debugPrint(
-    'Worker → Sender: ${workerSenderValid ? 'VALID' : 'SKIPPED'}',
-  );
-  debugPrint(
-    'Sender → Receiver: ${senderReceiverValid ? 'VALID' : 'SKIPPED'}',
-  );
-
-  if (workerSenderValid || senderReceiverValid) {
-    debugPrint('Root Cause: devices online — distance calculated from fresh coordinates');
-  } else if (monitoring != null &&
-      monitoring.hasData &&
-      OfflineDetector.isOffline(monitoring)) {
-    debugPrint(
-      'Root Cause: stale last known coordinates — '
-      'timestamp older than ${AppConstants.senderOfflineThresholdSec}s',
-    );
-  } else if (!_hasSenderData(monitoring)) {
-    debugPrint('Root Cause: sender coordinates not available');
-  } else if (!_hasReceiverData(monitoring)) {
-    debugPrint('Root Cause: receiver coordinates not available');
-  } else {
-    debugPrint('Root Cause: device offline or waiting for telemetry');
-  }
-}
-
-class _DeviceMonitoringSection extends StatelessWidget {
-  const _DeviceMonitoringSection({
-    required this.monitoringProvider,
-    required this.pairing,
-    required this.senderSeenThisSession,
-    required this.receiverSeenThisSession,
+  const _DeviceInfoCard({
+    required this.senderBattery,
+    required this.senderSignal,
+    required this.senderLastSeen,
+    this.senderLinkStatus,
+    required this.receiverBattery,
+    required this.receiverSignal,
+    required this.receiverLastSeen,
+    this.receiverLinkStatus,
+    this.senderId,
+    this.receiverId,
   });
-
-  final MonitoringProvider monitoringProvider;
-  final DevicePairingProvider pairing;
-  final bool senderSeenThisSession;
-  final bool receiverSeenThisSession;
 
   @override
   Widget build(BuildContext context) {
-    final monitoring = monitoringProvider.monitoring;
-    final senderState = _resolveSenderConnection(
-      monitoringProvider,
-      seenThisSession: senderSeenThisSession,
-    );
-    final receiverState = _resolveReceiverConnection(
-      monitoringProvider,
-      pairing,
-      seenThisSession: receiverSeenThisSession,
-    );
+    final theme = Theme.of(context);
+    final senderSeen = _formatLastSeen(senderLastSeen);
+    final receiverSeen = _formatLastSeen(receiverLastSeen);
 
-    final senderOnline = senderState == DeviceLinkStatus.online;
-    final receiverOnline = receiverState == DeviceLinkStatus.online;
-
-    final senderGps = DeviceLinkStatusResolver.gpsFixFromCoords(
-      monitoring?.latitude,
-      monitoring?.longitude,
-    );
-
-    final receiverNode = pairing.receiverTelemetry;
-    final receiverCoords = _receiverCoordinates(monitoring, receiverNode);
-    final receiverGps = DeviceLinkStatusResolver.gpsFixFromCoords(
-      receiverCoords.lat,
-      receiverCoords.lng,
-    );
-
-    return Column(
-      children: [
-        DeviceMonitorCard(
-          title: pairing.senderId != null
-              ? 'Sender (${pairing.senderId})'
-              : 'Sender',
-          leadingIcon: Icons.sensors,
-          status: senderState,
-          batteryLabel: senderOnline
-              ? _iotMetricLabel(monitoring?.battery, asBattery: true)
-              : DeviceLinkStatusResolver.noDataLabel,
-          signalLabel: senderOnline
-              ? _iotMetricLabel(monitoring?.signal, asBattery: false)
-              : DeviceLinkStatusResolver.noDataLabel,
-          gpsFixLabel: _gpsFixLabel(senderGps, senderState),
-          lastUpdateLabel: _formatLinkLastUpdate(monitoring, senderState),
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.devices, size: 18, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Text(
+                  'DEVICE STATUS',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // Sender
+            _deviceRow(
+              icon: Icons.sensors,
+              title: 'Sender${senderId != null ? ' ($senderId)' : ''}',
+              battery: senderBattery,
+              signal: senderSignal,
+              lastSeen: senderSeen,
+              linkStatus: senderLinkStatus,
+            ),
+            const Divider(height: 20),
+            // Receiver
+            _deviceRow(
+              icon: Icons.router,
+              title: 'Receiver${receiverId != null ? ' ($receiverId)' : ''}',
+              battery: receiverBattery,
+              signal: receiverSignal,
+              lastSeen: receiverSeen,
+              linkStatus: receiverLinkStatus,
+            ),
+          ],
         ),
-        const SizedBox(height: 12),
-        DeviceMonitorCard(
-          title: pairing.receiverId != null
-              ? 'Receiver (${pairing.receiverId})'
-              : 'Receiver',
-          leadingIcon: Icons.router,
-          status: receiverState,
-          batteryLabel: receiverOnline
-              ? _iotMetricLabel(receiverNode?.battery, asBattery: true)
-              : DeviceLinkStatusResolver.noDataLabel,
-          signalLabel: receiverOnline
-              ? _iotMetricLabel(receiverNode?.signal, asBattery: false)
-              : DeviceLinkStatusResolver.noDataLabel,
-          gpsFixLabel: _gpsFixLabel(receiverGps, receiverState),
-          lastUpdateLabel: _formatLinkLastUpdate(
-            receiverNode,
-            receiverState,
+      ),
+    );
+  }
+
+  String _formatLastSeen(int timestamp) {
+    if (timestamp <= 0) return '—';
+    return Formatters.dateTime(timestamp);
+  }
+
+  Widget _deviceRow({
+    required IconData icon,
+    required String title,
+    required int? battery,
+    required int? signal,
+    required String lastSeen,
+    String? linkStatus,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 20, color: AppColors.primary),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 4),
+              // Gunakan Wrap agar chip tidak overflow
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  _metricChip(Icons.battery_std, _batteryDisplay(battery)),
+                  _metricChip(
+                      Icons.signal_cellular_alt, _signalDisplay(signal)),
+                  _metricChip(Icons.schedule, lastSeen),
+                  if (linkStatus != null) _metricChip(Icons.link, linkStatus),
+                ],
+              ),
+            ],
           ),
         ),
       ],
     );
   }
-}
 
-class _DashboardConnectionNotifier {
-  _DashboardConnectionNotifier._();
+  /// Tampilkan '—' jika battery null atau ≤ 0 (belum ada data).
+  String _batteryDisplay(int? battery) {
+    if (battery == null || battery <= 0) return '—';
+    return '$battery%';
+  }
 
-  static int _nextNotificationId = 100;
+  /// Tampilkan '—' jika signal null atau ≤ 0 (belum ada data).
+  String _signalDisplay(int? signal) {
+    if (signal == null || signal <= 0) return '—';
+    return '$signal';
+  }
 
-  static Future<void> notify({
-    required String deviceName,
-    required DeviceLinkStatus? previous,
-    required DeviceLinkStatus current,
-  }) async {
-    if (!AppStage.localNotificationEnabled) return;
-    if (!LocalNotificationService.instance.isInitialized) return;
-    if (previous == null || previous == current) return;
-
-    String? title;
-    String? body;
-
-    if (current == DeviceLinkStatus.online) {
-      if (previous == DeviceLinkStatus.off) {
-        title = '$deviceName Reconnected';
-        body = '$deviceName kembali online.';
-      } else {
-        title = '$deviceName Connected';
-        body = '$deviceName berhasil terhubung.';
-      }
-    } else if (current == DeviceLinkStatus.off &&
-        previous == DeviceLinkStatus.online) {
-      title = '$deviceName Disconnected';
-      body = '$deviceName tidak mengirim data.';
-    }
-
-    if (title == null || body == null) return;
-
-    final plugin = FlutterLocalNotificationsPlugin();
-    await plugin.show(
-      _nextNotificationId++,
-      title,
-      body,
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          LocalNotificationService.channelOffline,
-          'Koneksi Perangkat',
-          channelDescription: 'Notifikasi koneksi Sender dan Receiver',
-          importance: Importance.high,
-          priority: Priority.high,
-          icon: '@mipmap/ic_launcher',
-        ),
+  Widget _metricChip(IconData icon, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.grey.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: AppColors.textSecondary),
+          const SizedBox(width: 3),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style:
+                  const TextStyle(fontSize: 10, color: AppColors.textSecondary),
+            ),
+          ),
+        ],
       ),
     );
-
-    debugPrint('Notification Trigger: FOUND — $title');
   }
 }
 
+// =====================================================================
+// STATISTICS
+// =====================================================================
+class _QuickStatsCard extends StatelessWidget {
+  final List<HistoryModel> history;
+
+  const _QuickStatsCard({required this.history});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final today = DateTime.now();
+    final todayStart =
+        DateTime(today.year, today.month, today.day).millisecondsSinceEpoch;
+
+    // System event types yang HARUS dikecualikan (sama dengan HistoryScreen & StatisticsScreen)
+    const systemEvents = <String>{
+      'ONLINE',
+      'OFFLINE',
+      'PAIR',
+      'UNPAIR',
+      'PAIRING',
+      'UNPAIRING',
+      'CONNECT',
+      'DISCONNECT',
+      'CONNECTED',
+      'DISCONNECTED',
+      'BACKEND_RESTART',
+      'SERVER_START',
+      'DEVICE_REGISTER',
+      'HEARTBEAT',
+      'GPS_UPDATE',
+      'BATTERY',
+      'SIGNAL',
+      'MQTT_CONNECTED',
+      'MQTT_DISCONNECTED',
+      'SYSTEM',
+      'BATTERY_UPDATE',
+      'SIGNAL_UPDATE',
+      'BACKEND_ONLINE',
+      'BACKEND_OFFLINE',
+    };
+    // Filter sama dengan HistoryScreen & StatisticsScreen:
+    // eventType bukan sistem, status hanya SAFE/NOISE/DANGER
+    final todayItems = history.where((h) {
+      final s = h.status.toString().toUpperCase().trim();
+      if (s != 'SAFE' && s != 'NOISE' && s != 'DANGER') return false;
+      final et = h.eventType.toString().toUpperCase().trim();
+      if (systemEvents.contains(et)) return false;
+      final ts = h.timestamp < 1000000000000 ? h.timestamp * 1000 : h.timestamp;
+      return ts >= todayStart;
+    }).toList();
+
+    int safe = 0, noise = 0, danger = 0;
+    for (final item in todayItems) {
+      final s = item.status.toString().toUpperCase().trim();
+      if (s == 'SAFE') safe++;
+      if (s == 'NOISE') noise++;
+      if (s == 'DANGER') danger++;
+    }
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.bar_chart,
+                    size: 18, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Text(
+                  'STATISTICS',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                _statItem('SAFE', '$safe', Colors.green, Icons.check_circle),
+                const SizedBox(width: 8),
+                _statItem('NOISE', '$noise', Colors.orange,
+                    Icons.warning_amber_rounded),
+                const SizedBox(width: 8),
+                _statItem('DANGER', '$danger', Colors.red, Icons.emergency),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statItem(String label, String value, Color color, IconData icon) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, color: color, size: 20),
+            const SizedBox(height: 4),
+            Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color,
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: color.withValues(alpha: 0.8),
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// =====================================================================
+// ALARM HISTORY — hanya SAFE, NOISE, DANGER
+// =====================================================================
+class _AlarmHistoryCard extends StatelessWidget {
+  final List<HistoryModel> history;
+
+  const _AlarmHistoryCard({required this.history});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    // System event types yang HARUS dikecualikan (sama dengan HistoryScreen & StatisticsScreen)
+    const systemEvents = <String>{
+      'ONLINE',
+      'OFFLINE',
+      'PAIR',
+      'UNPAIR',
+      'PAIRING',
+      'UNPAIRING',
+      'CONNECT',
+      'DISCONNECT',
+      'CONNECTED',
+      'DISCONNECTED',
+      'BACKEND_RESTART',
+      'SERVER_START',
+      'DEVICE_REGISTER',
+      'HEARTBEAT',
+      'GPS_UPDATE',
+      'BATTERY',
+      'SIGNAL',
+      'MQTT_CONNECTED',
+      'MQTT_DISCONNECTED',
+      'SYSTEM',
+      'BATTERY_UPDATE',
+      'SIGNAL_UPDATE',
+      'BACKEND_ONLINE',
+      'BACKEND_OFFLINE',
+    };
+    // Filter sama dengan HistoryScreen & StatisticsScreen:
+    // eventType bukan sistem, status hanya SAFE/NOISE/DANGER
+    final alarmEvents = history.where((item) {
+      final s = item.status.toString().toUpperCase().trim();
+      if (s != 'SAFE' && s != 'NOISE' && s != 'DANGER') return false;
+      final et = item.eventType.toString().toUpperCase().trim();
+      if (systemEvents.contains(et)) return false;
+      return true;
+    }).toList()
+      ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
+
+    // Ambil 5 terbaru
+    final latestAlarms = alarmEvents.take(5).toList();
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.alarm, size: 18, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Text(
+                  'ALARM HISTORY',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (latestAlarms.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Center(
+                  child: Text(
+                    'Belum ada riwayat',
+                    style:
+                        TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                  ),
+                ),
+              )
+            else
+              ...latestAlarms.map((item) => _historyItem(item)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _historyItem(dynamic item) {
+    final rawStatus = item.status?.toString().toUpperCase() ?? '';
+    final status = rawStatus == 'NORMAL' ? 'SAFE' : rawStatus;
+    final timeLabel = item.timeLabel?.toString() ?? '';
+
+    Color dotColor = Colors.grey;
+    if (status == 'DANGER') dotColor = Colors.red;
+    if (status == 'NOISE') dotColor = Colors.orange;
+    if (status == 'SAFE') dotColor = Colors.green;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              status,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              timeLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style:
+                  const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

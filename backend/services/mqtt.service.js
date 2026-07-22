@@ -1,6 +1,19 @@
 /**
  * MQTT service — HiveMQ subscriber for TrackSafe IoT devices.
  * Routes incoming messages to existing services (no duplicate business logic).
+ *
+ * AUDIT LOGGING GUIDE:
+ *   [mqtt:audit] MQTT Connected
+ *   [mqtt:audit] MQTT Message Received
+ *   [mqtt:audit] Topic Parsed
+ *   [mqtt:audit] Payload Valid
+ *   [mqtt:audit] Route Sender
+ *   [mqtt:audit] Route Heartbeat
+ *   [mqtt:audit] Route Alarm
+ *   [mqtt:audit] Route Receiver
+ *   [mqtt:audit] Save Firebase Start
+ *   [mqtt:audit] Save Firebase Success
+ *   [mqtt:audit] Save Firebase Failed
  */
 
 const mqtt = require('mqtt');
@@ -14,6 +27,21 @@ const deviceService = require('./device.service');
 const alarmService = require('./alarm.service');
 const historyService = require('./history.service');
 const logger = require('../config/logger');
+
+/**
+ * Audit logging helper with standardized format.
+ * Output: [mqtt:audit] {label} — {message} deviceId={id} kind={kind} ...
+ */
+function auditLog(label, message, extra = {}) {
+  const parts = [`[mqtt:audit] ${label} — ${message}`];
+  if (extra.deviceId) parts.push(`deviceId=${extra.deviceId}`);
+  if (extra.kind) parts.push(`kind=${extra.kind}`);
+  if (extra.topic) parts.push(`topic=${extra.topic}`);
+  if (extra.status) parts.push(`status=${extra.status}`);
+  if (extra.rule) parts.push(`rule=${extra.rule}`);
+  if (extra.error) parts.push(`error=${extra.error}`);
+  logger.info(parts.join(' '));
+}
 
 /** @type {import('mqtt').MqttClient|null} */
 let client = null;
@@ -33,14 +61,35 @@ const state = {
 
 async function handleSender(deviceId, payload) {
   const body = { ...payload, deviceId: payload.deviceId || deviceId };
-  logger.debug(
-    `[mqtt] sender ${body.deviceId} | status=${body.status} rule=${body.rule} ` +
-    `dist=${body.distance} bat=${body.battery} sig=${body.signal}`,
-  );
-  await withFirebaseRetry(
-    () => telemetryService.saveMqttSenderData(body),
-    { label: `sender/${body.deviceId}` },
-  );
+  auditLog('Route Sender', `processing device=${body.deviceId}`, {
+    deviceId: body.deviceId,
+    kind: 'sender',
+    status: body.status,
+    rule: body.rule,
+  });
+
+  auditLog('Save Firebase Start', `sender ${body.deviceId}`, {
+    deviceId: body.deviceId,
+    kind: 'sender',
+  });
+
+  try {
+    await withFirebaseRetry(
+      () => telemetryService.saveMqttSenderData(body),
+      { label: `sender/${body.deviceId}` },
+    );
+    auditLog('Save Firebase Success', `sender ${body.deviceId}`, {
+      deviceId: body.deviceId,
+      kind: 'sender',
+    });
+  } catch (error) {
+    auditLog('Save Firebase Failed', `sender ${body.deviceId}`, {
+      deviceId: body.deviceId,
+      kind: 'sender',
+      error: error.message,
+    });
+    throw error;
+  }
 }
 
 async function ensureHeartbeat(body, deviceType) {
@@ -67,14 +116,20 @@ async function handleReceiver(deviceId, payload) {
     deviceId: payload.deviceId || deviceId,
     online: payload.online !== false,
   };
-  logger.debug(`[mqtt] receiver ${body.deviceId} | bat=${body.battery} sig=${body.signal}`);
+  auditLog('Route Receiver', `processing device=${body.deviceId}`, {
+    deviceId: body.deviceId,
+    kind: 'receiver',
+  });
   await ensureHeartbeat(body, 'receiver');
   logger.info(`[mqtt] Receiver Online — heartbeat ${body.deviceId}`);
 }
 
 async function handleHeartbeat(deviceId, payload) {
   const body = { ...payload, deviceId: payload.deviceId || deviceId };
-  logger.debug(`[mqtt] heartbeat ${body.deviceId}`);
+  auditLog('Route Heartbeat', `processing device=${body.deviceId}`, {
+    deviceId: body.deviceId,
+    kind: 'heartbeat',
+  });
   const deviceType = String(body.deviceType || '').toLowerCase() === 'receiver'
     ? 'receiver'
     : 'sender';
@@ -83,7 +138,11 @@ async function handleHeartbeat(deviceId, payload) {
 }
 
 async function handleAlarm(deviceId, payload) {
-  logger.info(`[mqtt] alarm ${deviceId} | status=${payload.status} alarm=${payload.alarm}`);
+  auditLog('Route Alarm', `processing device=${deviceId}`, {
+    deviceId,
+    kind: 'alarm',
+    status: payload.status,
+  });
   await withFirebaseRetry(
     () => alarmService.processAlarmMessage(deviceId, payload),
     { label: `alarm/${deviceId}` },
@@ -145,6 +204,14 @@ async function routeMessage(topic, payload, kind, deviceId) {
     case 'sender':
       await handleSender(deviceId, payload);
       break;
+    case 'telemetry':
+      // ESP32 v2: tracksafe/device/{id}/telemetry → same as sender
+      await handleSender(deviceId, payload);
+      break;
+    case 'status':
+      // ESP32 v2: tracksafe/device/{id}/status → treat as sender telemetry
+      await handleSender(deviceId, payload);
+      break;
     case 'receiver':
       await handleReceiver(deviceId, payload);
       break;
@@ -160,6 +227,14 @@ async function routeMessage(topic, payload, kind, deviceId) {
     case 'pairing':
       await handlePairing(deviceId, payload);
       break;
+    case 'command':
+      // ESP32 v2: tracksafe/device/{id}/command — device subscribes, backend publishes
+      // Backend receives nothing meaningful on command topic from device
+      auditLog('Route Command', `received from device=${deviceId}`, {
+        deviceId,
+        kind: 'command',
+      });
+      break;
     default:
       logger.debug(`[mqtt] unhandled kind=${kind} topic=${topic}`);
   }
@@ -168,26 +243,40 @@ async function routeMessage(topic, payload, kind, deviceId) {
 async function onMessage(topic, message) {
   state.lastMessageAt = Date.now();
   state.messagesProcessed += 1;
-  logger.info(`[mqtt] MQTT Message Received — topic=${topic}`);
+  auditLog('MQTT Message Received', `topic=${topic}`, { topic });
 
+  // 1. Parse topic → extract kind + deviceId
   const topicResult = parseTopic(topic);
   if (!topicResult.ok) {
     logger.error(`[mqtt] Topic validation failed: ${topicResult.error}`);
     return;
   }
+  auditLog('Topic Parsed', `kind=${topicResult.kind} deviceId=${topicResult.deviceId}`, {
+    kind: topicResult.kind,
+    deviceId: topicResult.deviceId,
+    topic,
+  });
 
+  // 2. Parse payload (JSON)
   const payloadResult = parsePayload(message);
   if (!payloadResult.ok) {
     logger.error(`[mqtt] JSON validation failed on ${topic}: ${payloadResult.error}`);
     return;
   }
 
+  // 3. Validate payload fields per kind
   const validation = validatePayload(topicResult.kind, payloadResult.payload);
   if (!validation.ok) {
     logger.error(`[mqtt] Payload validation failed on ${topic}: ${validation.error}`);
     return;
   }
+  auditLog('Payload Valid', `kind=${topicResult.kind} deviceId=${topicResult.deviceId}`, {
+    kind: topicResult.kind,
+    deviceId: topicResult.deviceId,
+    topic,
+  });
 
+  // 4. Route to handler
   try {
     await routeMessage(
       topic,
@@ -295,7 +384,7 @@ function connectInternal() {
     state.connected = true;
     state.lastConnectedAt = Date.now();
     state.lastError = null;
-    logger.info('[mqtt] MQTT Connected');
+    auditLog('MQTT Connected', `broker=${url} clientId=${options.clientId}`);
 
     const pattern = mqttConfig.getSubscribePattern();
     const qos = mqttConfig.getQos();

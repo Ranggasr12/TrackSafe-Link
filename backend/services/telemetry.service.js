@@ -13,6 +13,7 @@ const VALID_STATUS = new Set(['NORMAL', 'NOISE', 'DANGER']);
 const MQTT_STATUS_ALIASES = Object.freeze({
   SAFE: 'NORMAL',
   TRAIN: 'DANGER',
+  WARNING: 'NOISE',
 });
 
 function normalizeStatus(raw) {
@@ -23,12 +24,24 @@ function normalizeStatus(raw) {
 }
 
 /**
- * Map rule number (ESP32) ke status Firebase.
+ * Map rule number/string (ESP32) ke status Firebase.
  * Rule 1: SAFE → NORMAL, Rule 2: NOISE, Rule 3: TRAIN → DANGER
+ * ESP32 v2 also sends string rules like "SAFE", "NOISE", "DANGER"
  * @param {unknown} rule
  * @returns {'NORMAL'|'NOISE'|'DANGER'|null}
  */
 function normalizeRuleStatus(rule) {
+  if (rule == null) return null;
+
+  // Try string rule first (ESP32 v2: "SAFE", "NOISE", "DANGER")
+  const strRule = String(rule).toUpperCase().trim();
+  if (strRule === 'SAFE') return 'NORMAL';
+  if (strRule === 'NOISE') return 'NOISE';
+  if (strRule === 'DANGER') return 'DANGER';
+  if (strRule === 'TRAIN') return 'DANGER';
+  if (strRule === 'WARNING') return 'NOISE';
+
+  // Try numeric rule (ESP32 v1: 1, 2, 3)
   const r = Number(rule);
   if (r === 1) return 'NORMAL';
   if (r === 2) return 'NOISE';

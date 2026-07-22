@@ -1,7 +1,7 @@
 import '../utils/constants.dart';
 import '../utils/formatters.dart';
 
-/// Model monitoring live (diisi mulai TAHAP 2+ dari Firebase).
+/// Model monitoring live (diisi dari Firebase Realtime Database).
 class MonitoringModel {
   final String deviceId;
   final String status;
@@ -24,8 +24,14 @@ class MonitoringModel {
   final String? connectionStatus;
 
   /// Status koneksi dari Backend Device Status Engine (OFF/WAITING/CONNECTING/ONLINE).
-  /// Null jika perangkat belum menulis field ini (fallback resolver lokal).
   final String? linkStatus;
+
+  /// Limit Switch dari ESP32 (HIGH/LOW) — digunakan oleh RuleBase.
+  final String? limitSwitch;
+
+  /// GPS data (lat/lng parsed as double? for direct use).
+  final double? gpsLat;
+  final double? gpsLng;
 
   const MonitoringModel({
     required this.deviceId,
@@ -48,6 +54,9 @@ class MonitoringModel {
     this.alarm,
     this.connectionStatus,
     this.linkStatus,
+    this.limitSwitch,
+    this.gpsLat,
+    this.gpsLng,
   });
 
   factory MonitoringModel.noData({String? deviceId}) {
@@ -72,6 +81,9 @@ class MonitoringModel {
       alarm: null,
       connectionStatus: null,
       linkStatus: null,
+      limitSwitch: null,
+      gpsLat: null,
+      gpsLng: null,
     );
   }
 
@@ -131,14 +143,38 @@ class MonitoringModel {
       return null;
     }
 
+    // Parse GPS from nested 'gps' object if available
+    double? gpsLat;
+    double? gpsLng;
+    final gps = map['gps'];
+    if (gps is Map) {
+      gpsLat = parseDouble(gps['latitude']) ?? parseDouble(gps['lat']);
+      gpsLng = parseDouble(gps['longitude']) ??
+          parseDouble(gps['lng']) ??
+          parseDouble(gps['lon']);
+    }
+
+    // FIX: Also parse 'lat' and 'lng' at the top level if 'latitude'/'longitude' are null
+    // This handles ESP32/backend data that uses 'lat'/'lng' keys directly
+    double? lat = parseDouble(map['latitude']) ?? parseDouble(map['lat']);
+    double? lng = parseDouble(map['longitude']) ??
+        parseDouble(map['lng']) ??
+        parseDouble(map['lon']);
+
+    // FIX: Fallback to gpsLat/gpsLng if top-level lat/lng are still null
+    lat ??= gpsLat;
+    lng ??= gpsLng;
+
+    final statusRaw = map['status']?.toString();
+
     return MonitoringModel(
       deviceId: map['deviceId']?.toString() ?? AppConstants.defaultDeviceId,
-      status: SensorStatus.fromEsp32(map['status']?.toString()),
+      status: SensorStatus.fromEsp32(statusRaw),
       distance: parseInt(map['distance']) ?? 0,
       battery: parseInt(map['battery']),
       signal: parseInt(map['signal']),
-      latitude: parseDouble(map['latitude']),
-      longitude: parseDouble(map['longitude']),
+      latitude: lat,
+      longitude: lng,
       receiverLatitude: parseReceiverLatitude(map),
       receiverLongitude: parseReceiverLongitude(map),
       speed: parseDouble(map['speed']),
@@ -152,6 +188,9 @@ class MonitoringModel {
       alarm: map['alarm'] == true,
       connectionStatus: map['connectionStatus']?.toString(),
       linkStatus: map['linkStatus']?.toString(),
+      limitSwitch: map['limitSwitch']?.toString(),
+      gpsLat: gpsLat,
+      gpsLng: gpsLng,
     );
   }
 
@@ -165,6 +204,12 @@ class MonitoringModel {
     }
     return 0;
   }
+
+  /// Convenient getter: get any available latitude
+  double? get effectiveLatitude => latitude ?? gpsLat;
+
+  /// Convenient getter: get any available longitude
+  double? get effectiveLongitude => longitude ?? gpsLng;
 
   Map<String, dynamic> toMap() {
     return {
@@ -218,7 +263,8 @@ class MonitoringModel {
     );
   }
 
-  bool get isDanger => status == SensorStatus.danger;
+  bool get isDanger =>
+      status == SensorStatus.danger || status == AppConstants.statusDanger;
   bool get isUnknown => status == SensorStatus.unknown;
 
   DateTime get dateTime => Formatters.fromTimestamp(timestamp);

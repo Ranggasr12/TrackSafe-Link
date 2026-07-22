@@ -13,6 +13,7 @@ import 'repositories/monitoring_repository.dart';
 import 'screens/main_shell.dart';
 import 'services/firebase_service.dart';
 import 'services/local_notification_service.dart';
+import 'services/notification_orchestrator.dart';
 import 'theme/app_theme.dart';
 import 'utils/app_stage.dart';
 import 'utils/constants.dart';
@@ -58,6 +59,9 @@ Future<void> main() async {
   // Start history stream after Firebase is initialized
   appState.startHistoryStream();
 
+  // Notification orchestrator — handle DANGER → notif + audio
+  final orchestrator = NotificationOrchestrator();
+
   debugPrint(
     'TrackSafe Link started — AppStage=${AppStage.current} '
     'paired=${pairing.isPaired}',
@@ -69,6 +73,7 @@ Future<void> main() async {
       appStateProvider: appState,
       monitoringProvider: monitoringProvider,
       devicePairingProvider: pairing,
+      orchestrator: orchestrator,
     ),
   );
 }
@@ -80,12 +85,14 @@ class TrackSafeApp extends StatelessWidget {
     required this.appStateProvider,
     required this.monitoringProvider,
     required this.devicePairingProvider,
+    required this.orchestrator,
   });
 
   final SettingsProvider settingsProvider;
   final AppStateProvider appStateProvider;
   final MonitoringProvider monitoringProvider;
   final DevicePairingProvider devicePairingProvider;
+  final NotificationOrchestrator orchestrator;
 
   @override
   Widget build(BuildContext context) {
@@ -97,6 +104,7 @@ class TrackSafeApp extends StatelessWidget {
         ChangeNotifierProvider.value(value: devicePairingProvider),
       ],
       child: NotificationListenerWidget(
+        orchestrator: orchestrator,
         child: Consumer<SettingsProvider>(
           builder: (context, settings, _) {
             return MaterialApp(

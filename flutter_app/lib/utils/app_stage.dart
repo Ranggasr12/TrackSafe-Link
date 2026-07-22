@@ -8,7 +8,7 @@
 /// 5 = ESP32
 /// 6 = Monitoring timeout
 /// 7 = Alarm
-/// 8 = Deploy Vercel
+/// 8 = Deploy Backend
 /// 11 = Local Notification
 class AppStage {
   AppStage._();
